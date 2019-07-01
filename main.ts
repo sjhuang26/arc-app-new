@@ -241,6 +241,10 @@ export class Table {
             throw new Error(`table ${name} not found in tableInfoAll`);
         }
         this.sheet = SpreadsheetApp.getActive().getSheetByName(this.tableInfo.sheetName);
+        if (this.sheet === null) {
+            this.sheet = SpreadsheetApp.getActive().insertSheet(this.tableInfo.sheetName);
+            this.sheet.getRange(1, 1, 1, this.tableInfo.fields.length).setValues([this.tableInfo.fields.map(field => field.name)]);
+        }
     }
 
     retrieveAllRecords() {
@@ -271,22 +275,29 @@ export class Table {
         this.sheet.appendRow(this.serializeRecord(record));
     }
 
-    updateRecord(editedRecord: Rec) {
-        const idColumn: any[][] = this.sheet.getRange(1, 1, this.sheet.getLastRow()).getValues();
+    getRowById(id: number): number {
+        const mat: any[][] = this.sheet.getRange(1, 1, this.sheet.getLastRow()).getValues();
         let matchingRow = -1;
-        for (let i = 0; i < idColumn.length; ++i) {
-            const v: number = i[0]; // only one column in the matrix
-            if (v === editedRecord.id) {
+        for (const [ v ] of mat) {
+            if (v === id) {
                 if (matchingRow !== -1) {
-                    throw new Error(`duplicate primary key ${v} in table ${this.name}`);
+                    throw new Error(`duplicate ID ${String(v)} in table ${String(this.name)}`);
                 }
                 matchingRow = v;
             }
         }
         if (matchingRow == -1) {
-            throw new Error(`primary key ${editedRecord.id} not found in table ${this.name}`);
+            throw new Error(`ID ${String(id)} not found in table ${String(this.name)}`);
         }
-        this.sheet.getRange(matchingRow, 1, 1, this.sheet.getLastColumn()).setValues(this.serializeRecord(editedRecord));
+        return matchingRow;
+    }
+
+    updateRecord(editedRecord: Rec) {
+        this.sheet.getRange(this.getRowById(editedRecord.id), 1, 1, this.sheet.getLastColumn()).setValues(this.serializeRecord(editedRecord));
+    }
+
+    deleteRecord(id: number) {
+        this.sheet.deleteRow(this.getRowById(id));
     }
 
     createNewId() {
@@ -299,9 +310,9 @@ export class Table {
         return this.idCounter;
     }
 
-    processClientAsk(args: any[]): ServerResponse<any> {
+    processClientAsk(args: any[]): any {
         if (args[0] === 'retrieveAll') {
-            return null;
+            return this.retrieveAllRecords();
         }
         if (args[0] === 'update') {
             this.updateRecord(args[1]);
@@ -320,8 +331,7 @@ export class Table {
             return args[1];
         }
         if (args[0] === 'delete') {
-            // TODO
-            // this.deleteRecord(args[1]);
+            this.deleteRecord(args[1]);
             onClientNotification(['delete', this.name, args[1]]);
             return null;
         }
