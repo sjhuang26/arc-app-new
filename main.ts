@@ -1,4 +1,8 @@
-/*
+/**
+ * @OnlyCurrentDoc
+ */
+
+ /*
 
 SERVER TYPES (COPIED FROM CLIENT)
 
@@ -225,7 +229,8 @@ class Table {
                 new JsonField('mods'),
                 new JsonField('modsPref'),
                 new StringField('subjectList'),
-                new JsonField('attendance')
+                new JsonField('attendance'),
+                new JsonField('dropInMods')
             ]
         },
         learners: {
@@ -1024,6 +1029,9 @@ function onSyncForms() {
 function onRecalculateAttendance() {
     try {
         Logger.log('start');
+        
+        let numAttendancesChanged = 0;
+        
         // read tables
         const tutors = tableMap.tutors().retrieveAllRecords();
         const tutorsArray = Object_values(tutors);
@@ -1047,6 +1055,7 @@ function onRecalculateAttendance() {
                 }
                 if (isNew) {
                     y.attendance[String(x.dateOfAttendance)].push({ date: x.dateOfAttendance, mod: x.mod, minutes: x.minutesForTutor });
+                    ++numAttendancesChanged;
                 }
             }
             if (x.learner !== -1) {
@@ -1054,7 +1063,16 @@ function onRecalculateAttendance() {
                 if (y.attendance[String(x.dateOfAttendance)] === undefined) {
                     y.attendance[String(x.dateOfAttendance)] = [];
                 }
-                y.attendance[String(x.dateOfAttendance)].push({ date: x.dateOfAttendance, mod: x.mod, minutes: x.minutesForLearner });
+                let isNew = true;
+                for (const z of y.attendance[String(x.dateOfAttendance)]) {
+                    if (x.mod === z.mod) {
+                        isNew = false;
+                    }
+                }
+                if (isNew) {
+                    y.attendance[String(x.dateOfAttendance)].push({ date: x.dateOfAttendance, mod: x.mod, minutes: x.minutesForLearner });
+                    ++numAttendancesChanged;
+                }
             }
         }
         Logger.log('part 2');
@@ -1062,6 +1080,10 @@ function onRecalculateAttendance() {
         const tutorShouldBeShowingUp: { [id: string]: { [mod: string]: boolean } } = {};
         for (const tutor of tutorsArray) {
             tutorShouldBeShowingUp[String(tutor.id)] = {};
+            // handle drop-ins
+            for (const mod of tutor.dropInMods) {
+                tutorShouldBeShowingUp[String(tutor.id)][mod] = true;
+            }
         }
         for (const matching of Object_values(matchings)) {
             if (matching.status === 'finalized') {
@@ -1072,7 +1094,6 @@ function onRecalculateAttendance() {
         Logger.log(JSON.stringify(tutorShouldBeShowingUp));
 
         // mark absences
-        let numAbsencesChanged = 0;
         for (const day of Object_values(attendanceDays)) {
             // round down to the nearest 24-hour day
             day.dateOfAttendance = roundDownToDay(day.dateOfAttendance);
@@ -1098,7 +1119,7 @@ function onRecalculateAttendance() {
                                     if (tutor.attendance[day.dateOfAttendance] !== undefined) {
                                         tutor.attendance[day.dateOfAttendance] = tutor.attendance[day.dateOfAttendance].filter((x: any) => {
                                             if (x.mod === mod && x.minutes === 0) {
-                                                ++numAbsencesChanged;
+                                                ++numAttendancesChanged;
                                                 return false;
                                             } else {
                                                 return true;
@@ -1120,7 +1141,7 @@ function onRecalculateAttendance() {
                                     if (!alreadyExists) {
                                         // add an absence!
                                         tutor.attendance[day.dateOfAttendance].push({ date: day.dateOfAttendance, mod, minutes: 0 });
-                                        ++numAbsencesChanged;
+                                        ++numAttendancesChanged;
                                     }
                                 }
                             }
@@ -1147,7 +1168,7 @@ function onRecalculateAttendance() {
         // update table
         tableMap.tutors().updateAllRecords(tutorsArray);
 
-        SpreadsheetApp.getUi().alert(`Finished attendance update. ${numAbsencesChanged} absences were changed.`);
+        SpreadsheetApp.getUi().alert(`Finished attendance update. ${numAttendancesChanged} attendances were changed.`);
     } catch (err) {
         Logger.log(stringifyError(err));
         throw err;
@@ -1156,6 +1177,16 @@ function onRecalculateAttendance() {
 
 // This generates a schedule that is written to a new sheet.
 function onGenerateSchedule() {
+    type ScheduleEntry = { mod: number, tutorName: string, info: string; isDropIn: boolean };
+
+    const sortComparator = (a: ScheduleEntry, b: ScheduleEntry) => {
+        const x = a.tutorName.toLowerCase();
+        const y = b.tutorName.toLowerCase();
+        if (x < y) return -1;
+        if (x > y) return 1;
+        return 0;
+    };
+
     try {
         // Delete & insert sheet
         let ss = SpreadsheetApp.getActive();
@@ -1174,44 +1205,116 @@ function onGenerateSchedule() {
         sheet.appendRow(['ARC SCHEDULE']);
         sheet.appendRow([`Automatically generated on ${new Date()}`]);
 
+        // Create a list of [ mod, tutorName, info about matching, as string ]
+        const scheduleInfo: ScheduleEntry[] = []; // mod = -1 means that the tutor has no one
+
         // Figure out all matchings that are finalized, indexed by tutor
-        const index: { [tutorId: string]: Rec[] } = {};
-        for (const tutorKey of Object.getOwnPropertyNames(tutors)) {
-            const r = tutors[tutorKey];
-            const idx = r.id;
-            index[idx] = [];
-        }
-        for (const idKey of Object.getOwnPropertyNames(matchings)) {
-            const r = matchings[idKey];
-            const idx = r.tutor;
-            if (r.status === 'finalized') {
-                index[idx].push(r);
+        const index: { [tutorId: string]: { isMatched: boolean; hasBeenScheduled: boolean; } } = {};
+
+        // create a bunch of blanks in the index
+        for (const x of Object_values(tutors)) {
+            index[String(x.id)] = {
+                isMatched: false,
+                hasBeenScheduled: false
             }
         }
 
-        // Sort the index, first reformatting it as a 2D matrix
-        const tutorAndRecordsArray: [ string, Rec[] ][] = [];
-        for (const i of Object.getOwnPropertyNames(index)) {
-            tutorAndRecordsArray.push([tutors[i].friendlyFullName, index[i]]);
+        // fill in index with matchings
+        for (const x of Object_values(matchings)) {
+            if (x.status === 'finalized') {
+                const name = learners[x.learner].friendlyFullName;
+                index[x.tutor].isMatched = true;
+                index[x.tutor].hasBeenScheduled = true;
+                scheduleInfo.push({
+                    isDropIn: false,
+                    mod: x.mod,
+                    tutorName: tutors[x.tutor].friendlyFullName,
+                    info: (x.specialRoom === '' || x.specialRoom === undefined) ? `(w/${name})` : `(w/${name} SPECIAL @room ${x.specialRoom})`
+                });
+            }
         }
-        tutorAndRecordsArray.sort((a, b) => {
-            const x = a[0].toLowerCase();
-            const y = b[0].toLowerCase();
-            if (x < y) return -1;
-            if (x > y) return 1;
-            return 0;
-        });
-        
+
+        const unscheduledTutorNames: string[] = [];
+
+        // fill in index with drop-ins
+        for (const x of Object_values(tutors)) {
+            if (!index[String(x.id)].isMatched) {
+                for (const mod of x.dropInMods) {
+                    index[String(x.id)].hasBeenScheduled = true;
+                    scheduleInfo.push({
+                        isDropIn: true,
+                        mod,
+                        tutorName: x.friendlyFullName,
+                        info: '(drop in)'
+                    });
+                }
+                // unscheduled?
+                if (!index[String(x.id)].hasBeenScheduled) {
+                    unscheduledTutorNames.push(x.friendlyFullName);
+                }
+            }
+        }
+
         // Print!
-        for (const [ tutorName, matchings ] of tutorAndRecordsArray) {
-            for (const matching of matchings) {
-                sheet.appendRow([tutorName, stringifyMod(matching.mod), learners[matching.learner].friendlyFullName]);
-            }
-            if (matchings.length === 0) {
-                sheet.appendRow([tutorName, 'no one']);
-            }
+        // CHANGE COLUMNS
+        sheet.deleteColumns(5, sheet.getMaxColumns() - 5);
+        sheet.setColumnWidth(1, 30);
+        sheet.setColumnWidth(2, 300);
+        sheet.setColumnWidth(3, 30);
+        sheet.setColumnWidth(4, 300);
+        sheet.setColumnWidth(5, 30);
+
+        // HEADER
+        sheet.getRange(1, 1, 3, 5).mergeAcross();
+        sheet.getRange(1, 1).setValue('ARC Schedule').setFontSize(36).setHorizontalAlignment('center');
+        sheet.getRange(2, 1).setValue('Automatically generated on ' + new Date().toISOString()).setFontSize(14).setHorizontalAlignment('center');
+        sheet.setRowHeight(3, 30);
+        sheet.getRange(4, 2).setValue('A Days').setFontSize(18).setHorizontalAlignment('center');
+        sheet.getRange(4, 4).setValue('B Days').setFontSize(18).setHorizontalAlignment('center');
+        sheet.setRowHeight(5, 30);
+
+        const layoutMatrix: [ScheduleEntry[], ScheduleEntry[]][] = []; // [mod0to9][abday]
+        for (let i = 0; i < 10; ++i) {
+            layoutMatrix.push([
+                scheduleInfo.filter(x => x.mod === i + 1).sort(sortComparator), // A days
+                scheduleInfo.filter(x => x.mod === i + 11).sort(sortComparator) // B days
+            ]);
         }
-        sheet.appendRow([`That's all!`]);
+
+        // LAYOUT
+        let nextRow = 6;
+        for (let i = 0; i < 10; ++i) {
+            const scheduleRowSize = Math.max(layoutMatrix[i][0].length, layoutMatrix[i][1].length);
+            // LABEL
+            sheet.getRange(nextRow, 1, scheduleRowSize).merge();
+            sheet.getRange(nextRow, 1).setValue(`${i + 1}`).setFontSize(18).setVerticalAlignment('top');
+
+            // CONTENT
+            sheet.getRange(nextRow, 2, layoutMatrix[i][0].length).setValues(layoutMatrix[i][0].map(x => [`${x.tutorName} ${x.info}`])).setWrap(true).setFontColors(layoutMatrix[i][0].map(x => [x.isDropIn ? 'black' : 'red']));
+            sheet.getRange(nextRow, 4, layoutMatrix[i][1].length).setValues(layoutMatrix[i][1].map(x => [`${x.tutorName} ${x.info}`])).setWrap(true).setFontColors(layoutMatrix[i][1].map(x => [x.isDropIn ? 'black' : 'red']));
+            
+            // SET THE NEXT ROW
+            nextRow += scheduleRowSize;
+
+            // GUTTER
+            sheet.getRange(nextRow, 1, 1, 5).merge();
+            sheet.setRowHeight(nextRow, 60);
+            ++nextRow;
+        }
+        
+        // UNSCHEDULED TUTORS
+        sheet.getRange(nextRow, 2, 1, 3).merge().setValue(`Unscheduled tutors`).setFontSize(18).setFontStyle('italic').setHorizontalAlignment('center').setWrap(true);
+        ++nextRow;
+        sheet.getRange(nextRow, 2, unscheduledTutorNames.length, 3).mergeAcross().setHorizontalAlignment('center');
+        sheet.getRange(nextRow, 2, unscheduledTutorNames.length).setValues(unscheduledTutorNames.map(x => [x + ' (unscheduled)']));
+        nextRow += unscheduledTutorNames.length;
+
+        // FOOTER
+        sheet.getRange(nextRow, 2, 1, 4).merge().setValue(`That's all!`).setFontSize(18).setFontStyle('italic').setHorizontalAlignment('center');
+        ++nextRow;
+
+        // FIT ROWS/COLUMNS
+        sheet.deleteRows(sheet.getLastRow() + 1, sheet.getMaxRows() - sheet.getLastRow());
     } catch (err) {
         Logger.log(stringifyError(err));
         throw err;
