@@ -38,8 +38,43 @@ UTILITIES
 
 */
 
+
+function roundDownToDay(utcTime: number) {
+    const timeInThisTimezone = utcTime - 4 * 3600 * 1000;
+    return Math.floor(timeInThisTimezone / 1000 / 86400) * 86400 * 1000 + 4 * 3600 * 1000;
+}
+
+function onlyKeepUnique<T>(arr: T[]): T[] {
+    const x = {};
+    for (let i = 0; i < arr.length; ++i) {
+        x[JSON.stringify(arr[i])] = arr[i];
+    }
+    const result = [];
+    for (const key of Object.getOwnPropertyNames(x)) {
+        result.push(x[key]);
+    }
+    return result;
+}
+
+// polyfill of the typical Object.values()
+function Object_values<T>(o: To<T>): T[] {
+    const result: T[] = [];
+    for (const i of Object.getOwnPropertyNames(o)) {
+        result.push(o[i]);
+    }
+    return result;
+}
+
+function recordCollectionToArray(r: RecCollection): Rec[] {
+    const x = [];
+    for (const i of Object.getOwnPropertyNames(r)) {
+        x.push(r[i]);
+    }
+    return x;
+}
+
 // This function converts mod numbers (ie. 11) into A-B-day strings (ie. 1B).
-export function stringifyMod(mod: number) {
+function stringifyMod(mod: number) {
     if (1 <= mod && mod <= 10) {
         return String(mod) + 'A';
     } else if (11 <= mod && mod <= 20) {
@@ -52,13 +87,14 @@ function stringifyError(error: any): string {
     if (error instanceof Error) {
         return JSON.stringify(error, Object.getOwnPropertyNames(error));
     }
-    if (typeof error === 'object') {
+    try {
         return JSON.stringify(error);
+    } catch (unusedError) {
+        return String(error);
     }
-    return String(error);
 }
 
-interface To<T> {
+type To<T> = {
     [key: string]: T;
 }
 
@@ -108,18 +144,24 @@ class StringField extends Field {
     }
 }
 
-// The handling of dates is special ...
-// Parsing dates returns a number, which is used internally
-// Serializing dates takes an internally-used number, which is written to the spreadsheet as a date
+// Dates are treated as numbers.
 class DateField extends Field {
     constructor(name: string = null) {
         super(name);
     }
     parse(x: any) {
-        return new Date(x).getTime();
+        if (x === '' || x === -1) {
+            return -1;
+        } else {
+            return Number(x);
+        }
     }
     serialize(x: any) {
-        return new Date(x);
+        if (x === -1 || x === '') {
+            return '';
+        } else {
+            return new Date(x);
+        }
     }
 }
 
@@ -182,7 +224,8 @@ class Table {
                 ...Table.makeBasicStudentConfig(),
                 new JsonField('mods'),
                 new JsonField('modsPref'),
-                new StringField('subjectList')
+                new StringField('subjectList'),
+                new JsonField('attendance')
             ]
         },
         learners: {
@@ -190,7 +233,8 @@ class Table {
             fields: [
                 new NumberField('id'),
                 new DateField('date'),
-                ...Table.makeBasicStudentConfig()
+                ...Table.makeBasicStudentConfig(),
+                new JsonField('attendance')
             ]
         },
         requests: {
@@ -319,6 +363,60 @@ class Table {
                 // contact info is intentionally omitted
             ]
         },
+        attendanceForm: {
+            sheetName: '$attendance-form',
+            isForm: true,
+            fields: [
+                /*
+                Layout of form:
+                    Timestamp
+                    Date (LEAVE BLANK if taking today's attendance)
+                    A or B day?
+                    Mod?
+                    Student ID?
+                    Is your learner/tutor present with you?
+                */
+                new DateField('date'),
+                new DateField('dateOfAttendance'), // optional in the form
+                new StringField('abDay'),
+                new NumberField('mod1To10'),
+                new NumberField('studentId'),
+                new StringField('learnerOrTutor'),
+                new StringField('presence')
+            ]
+        },
+        attendanceLog: {
+            // this table is merged into the JSON of tutor.fields.attendance
+            // the table will get quite large, so we will hand-archive it from time to time
+            // ASSUMPTION: (thus...) the table DOESN'T contain all of the attendance data. Some of it
+            // will be archived somewhere else. The JSON will be merged with the attendance log.
+            sheetName: '$attendance-log',
+            fields: [
+                new NumberField('id'),
+                new DateField('date'),
+                new DateField('dateOfAttendance'), // rounded to nearest day
+                new StringField('validity'), // filled with an error message if the form entry was typed wrong
+                new NumberField('mod'),
+
+                // one of these ID fields will be left as -1 (blank).
+                new NumberField('tutor'),
+                new NumberField('learner'),
+                new NumberField('minutesForTutor'),
+                new NumberField('minutesForLearner')
+            ]
+        },
+        attendanceDays: {
+            sheetName: '$attendance-days',
+            fields: [
+                new NumberField('id'),
+                new DateField('date'),
+                new DateField('dateOfAttendance'),
+                new StringField('abDay'),
+
+                // we add a functionality to reset a day's attendance absences
+                new StringField('status') // upcoming, finished, finalized, unreset, reset
+            ]
+        },
         operationLog: {
             sheetName: '$operation-log',
             fields: [
@@ -333,6 +431,7 @@ class Table {
     tableInfo: TableInfo;
     sheet: GoogleAppsScript.Spreadsheet.Sheet;
     isForm: boolean;
+    sheetLastColumn: number;
 
     constructor(name: string) {
         this.name = name;
@@ -353,15 +452,18 @@ class Table {
                 this.sheet = SpreadsheetApp.getActive().insertSheet(this.tableInfo.sheetName);
                 this.rebuildSheetHeadersIfNeeded();
             }
+        } else {
+            this.sheetLastColumn = this.sheet.getLastColumn();
         }
     }
 
     rebuildSheetHeadersIfNeeded() {
+        const col = this.sheet.getLastColumn();
         if (!this.isForm) {
-            const col = this.sheet.getLastColumn();
             this.sheet.getRange(1, 1, 1, col === 0 ? 1 : col).clearContent();
             this.sheet.getRange(1, 1, 1, this.tableInfo.fields.length).setValues([this.tableInfo.fields.map(field => field.name)]);
         }
+        this.sheetLastColumn = col;
     }
 
     resetEntireSheet() {
@@ -371,11 +473,18 @@ class Table {
         this.rebuildSheetHeadersIfNeeded();
     }
 
+    rewriteEntireSheet() {
+        if (!this.isForm) {
+            this.updateAllRecords(Object_values(this.retrieveAllRecords()));
+        }
+        this.rebuildSheetHeadersIfNeeded();
+    }
+
     retrieveAllRecords(): RecCollection {
         if (ARC_APP_DEBUG_MODE) {
             this.rebuildSheetHeadersIfNeeded();
         }
-        if (this.sheet.getLastColumn() !== this.tableInfo.fields.length) {
+        if (this.sheetLastColumn !== this.tableInfo.fields.length) {
             throw new Error(`something's wrong with the columns of table ${this.name} (${this.tableInfo.fields.length})`)
         }
         const raw = this.sheet.getDataRange().getValues();
@@ -443,8 +552,26 @@ class Table {
         return rowNum;
     }
 
-    updateRecord(editedRecord: Rec): void {
-        this.sheet.getRange(this.getRowById(editedRecord.id), 1, 1, this.sheet.getLastColumn()).setValues([this.serializeRecord(editedRecord)]);
+    updateRecord(editedRecord: Rec, rowNum?: number): void {
+        if (rowNum === undefined) {
+            rowNum = this.getRowById(editedRecord.id);
+        }
+        this.sheet.getRange(rowNum, 1, 1, this.sheetLastColumn).setValues([this.serializeRecord(editedRecord)]);
+    }
+
+    updateAllRecords(editedRecords: Rec[]): void {
+        if (this.sheet.getLastRow() === 1) {
+            return; // the sheet is empty, and trying to select it will result in an error
+        }
+        // because the first row is headers, we ignore it and start from the second row
+        const mat: any[][] = this.sheet.getRange(2, 1, this.sheet.getLastRow() - 1).getValues();
+        let idRowMap: To<number> = {};
+        for (let i = 0; i < mat.length; ++i) {
+            idRowMap[String(mat[i][0])] = i + 2; // i = 0 <=> second row (rows are 1-indexed)
+        }
+        for (const r of editedRecords) {
+            this.updateRecord(r, idRowMap[String(r.id)]);
+        }
     }
 
     deleteRecord(id: number): void {
@@ -517,7 +644,10 @@ const tableMap: TableMap = {
     ...tableMapBuild('matchings'),
     ...tableMapBuild('requestForm'),
     ...tableMapBuild('specialRequestForm'),
-    ...tableMapBuild('operationLog')
+    ...tableMapBuild('attendanceForm'),
+    ...tableMapBuild('attendanceLog'),
+    ...tableMapBuild('operationLog'),
+    ...tableMapBuild('attendanceDays')
 };
 
 function doGet() {
@@ -533,7 +663,16 @@ type TableMap = {
 }
 function tableMapBuild(name: string) {
     return {
-        [name]: () => new Table(name)
+        [name]: (() => {
+            let table: Table = null;
+            return () => {
+                if (table === null) {
+                    return new Table(name);
+                } else {
+                    return table;
+                }
+            };
+        })()
     };
 }
 
@@ -638,6 +777,21 @@ function debugResetEverything() {
     }
 }
 
+function debugRewriteEverything() {
+    try {
+        const ui = SpreadsheetApp.getUi();
+        const response = ui.prompt('Leave the box below blank to cancel debug operation.');
+        if (response.getResponseText() === 'DEBUG_REWRITE') {
+            for (const name of Object.getOwnPropertyNames(tableMap)) {
+                tableMap[name]().rewriteEntireSheet();
+            }
+        }
+    } catch (err) {
+        Logger.log(stringifyError(err));
+        throw err;
+    }
+}
+
 function doFormSync(formTable: Table, actualTable: Table, formRecordToActualRecord: (formRecord: Rec) => Rec): number {
     const actualRecords = actualTable.retrieveAllRecords();
     const formRecords = formTable.retrieveAllRecords();
@@ -649,10 +803,8 @@ function doFormSync(formTable: Table, actualTable: Table, formRecordToActualReco
     const index: { [date: string]: Rec } = {};
     for (const idKey of Object.getOwnPropertyNames(actualRecords)) {
         const record = actualRecords[idKey];
-        if (record.status === 'unchecked') { // record status MUST be unchecked for it to count!
-            const dateIndexKey = String(record.date);
-            index[dateIndexKey] = record;
-        }
+        const dateIndexKey = String(record.date);
+        index[dateIndexKey] = record;
     }
     for (const idKey of Object.getOwnPropertyNames(formRecords)) {
         const record = formRecords[idKey];
@@ -666,7 +818,14 @@ function doFormSync(formTable: Table, actualTable: Table, formRecordToActualReco
     return numOfThingsSynced;
 }
 
+const MINUTES_PER_MOD = 38;
+
 function onSyncForms() {
+    // tables
+    const tutors = tableMap.tutors().retrieveAllRecords();
+    const learners = tableMap.learners().retrieveAllRecords();
+    const matchings = tableMap.matchings().retrieveAllRecords();
+
     // parsing contact preferences
     function parseContactPref(s: string) {
         if (s === 'Phone') return 'phone';
@@ -681,6 +840,16 @@ function onSyncForms() {
         if (g === 'Junior') return 11;
         if (g === 'Senior') return 12;
         return 0;
+    }
+
+    function parseModInfo(abDay: string, mod1To10: number): number {
+        if (abDay.toLowerCase().charAt(0) === 'a') {
+            return mod1To10;
+        }
+        if (abDay.toLowerCase().charAt(0) === 'b') {
+            return mod1To10 + 10;
+        }
+        throw new Error(`${String(abDay)} does not start with A or B`);
     }
 
     function processRequestFormRecord(r: Rec): Rec {
@@ -717,22 +886,6 @@ function onSyncForms() {
         };
     }
     function processSpecialRequestFormRecord(r: Rec): Rec {
-        function parseModInfo(abDay: string, mod1To10: number): number {
-            // polyfill
-            // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/startsWith#Polyfill
-            function startsWith(search, pos) {
-                pos = !pos || pos < 0 ? 0 : +pos;
-                return this.substring(pos, pos + search.length) === search;
-            }
-
-            if (abDay.toLowerCase().charAt(0) === 'a') {
-                return mod1To10;
-            }
-            if (abDay.toLowerCase().charAt(0) === 'b') {
-                return mod1To10 + 10;
-            }
-            throw new Error(`${String(abDay)} does not start with A or B`);
-        }
         return {
             id: -1,
             date: r.date, // the date MUST be the date from the form
@@ -753,12 +906,248 @@ function onSyncForms() {
             status: 'unchecked'
         };
     }
+    function processAttendanceFormRecord(r: Rec): Rec {
+        const mod = parseModInfo(r.abDay, r.mod1To10);
+        let tutor = -1;
+        let learner = -1;
+        let validity = '';
+        let minutesForTutor = -1;
+        let minutesForLearner = -1;
+        if (r.learnerOrTutor === 'Learner') {
+            // give the learner their time
+            minutesForLearner = MINUTES_PER_MOD;
+
+            // figure out who the learner is, by student ID
+            const xLearners = recordCollectionToArray(learners).filter(x => x.studentId === r.studentId);
+            if (xLearners.length === 0) {
+                validity = 'learner student ID does not exist';
+            } else if (xLearners.length === 1) {
+                learner = xLearners[0].id;
+            } else {
+                throw new Error(`duplicate learner ID#${String(r.studentId)}`);
+            }
+
+            // learners always have tutors --- figure out who the tutor is, by looking through matchings
+            const xMatchings = recordCollectionToArray(matchings).filter(x => x.status === 'finalized' && x.learner === learner && x.mod === mod);
+            if (xMatchings.length === 0) {
+                validity = 'matching does not exist';
+            } else if (xMatchings.length === 1) {
+                tutor = xMatchings[0].tutor;
+            } else {
+                throw new Error(`the learner ${xMatchings[0].friendlyFullName} is matched twice on the same mod`);
+            }
+
+            // see if the tutor showed up
+            if (validity === '') {
+                if (r.presence === 'Yes') {
+                    minutesForTutor = MINUTES_PER_MOD;
+                } else if (r.presence === 'No') {
+                    minutesForTutor = 0;
+                } else if (r.presence === `I'm a tutor and don't have a learner assigned`) {
+                    // but they said that they were a learner! nonsense!
+                    validity = 'incompatible set of form answers';
+                } else {
+                    throw new Error(`invalid presence (${String(r.presence)})`)
+                }
+            }
+        } else if (r.learnerOrTutor === 'Tutor') {
+            // give the tutor their time
+            minutesForTutor = MINUTES_PER_MOD;
+
+            // figure out who the tutor is, by student ID
+            const xTutors = recordCollectionToArray(tutors).filter(x => x.studentId === r.studentId);
+            if (xTutors.length === 0) {
+                validity = 'tutor student ID does not exist';
+            } else if (xTutors.length === 1) {
+                tutor = xTutors[0].id;
+            } else {
+                throw new Error(`duplicate tutor student id ${String(r.studentId)}`);
+            }
+
+            // does the tutor have a learner?
+            const xMatchings = recordCollectionToArray(matchings).filter(x => x.status === 'finalized' && x.tutor === tutor && x.mod === mod);
+            if (xMatchings.length === 0) {
+                learner = -1;
+            } else if (xMatchings.length === 1) {
+                learner = xMatchings[0].learner;
+            } else {
+                throw new Error(`the tutor ${xMatchings[0].friendlyFullName} is matched twice on the same mod`);
+            }
+
+            // see if the learner showed up
+            if (validity === '') {
+                if (r.presence === 'Yes') {
+                    minutesForLearner = MINUTES_PER_MOD;
+                } else if (r.presence === 'No') {
+                    minutesForLearner = 0;
+                } else if (r.presence === `I'm a tutor and don't have a learner assigned`) {
+                    if (learner === -1) {
+                        minutesForLearner = -1;
+                    } else {
+                        // so there really is a learner...
+                        validity = `tutor said they don't have a learner assigned, but they do!`
+                    }
+                } else {
+                    throw new Error(`invalid presence (${String(r.presence)})`)
+                }
+            }
+        } else {
+            throw new Error('process attendance error: learner/tutor naming issue')
+        }
+
+        return {
+            id: r.id,
+            date: r.date,
+            dateOfAttendance: roundDownToDay(r.dateOfAttendance === -1 ? r.date : r.dateOfAttendance),
+            validity,
+            mod,
+            tutor,
+            learner,
+            minutesForTutor,
+            minutesForLearner
+        };
+    }
 
     try {
         let numOfThingsSynced = 0;
         numOfThingsSynced += doFormSync(tableMap.requestForm(), tableMap.requestSubmissions(), processRequestFormRecord);
         numOfThingsSynced += doFormSync(tableMap.specialRequestForm(), tableMap.requestSubmissions(), processSpecialRequestFormRecord);
-        SpreadsheetApp.getUi().alert(`Finished sync! ${numOfThingsSynced} new tutor requests found.`);
+        numOfThingsSynced += doFormSync(tableMap.attendanceForm(), tableMap.attendanceLog(), processAttendanceFormRecord);
+        SpreadsheetApp.getUi().alert(`Finished sync! ${numOfThingsSynced} new form submits found.`);
+    } catch (err) {
+        Logger.log(stringifyError(err));
+        throw err;
+    }
+}
+
+// This recalculates the attendance.
+function onRecalculateAttendance() {
+    try {
+        Logger.log('start');
+        // read tables
+        const tutors = tableMap.tutors().retrieveAllRecords();
+        const tutorsArray = Object_values(tutors);
+        const learners = tableMap.learners().retrieveAllRecords();
+        const attendanceLog = tableMap.attendanceLog().retrieveAllRecords();
+        const attendanceDays = tableMap.attendanceDays().retrieveAllRecords();
+        const matchings = tableMap.matchings().retrieveAllRecords();
+        Logger.log('part 1');
+        // combine presences
+        for (const x of Object_values(attendanceLog)) {
+            if (x.tutor !== -1) {
+                const y = tutors[String(x.tutor)];
+                if (y.attendance[String(x.dateOfAttendance)] === undefined) {
+                    y.attendance[String(x.dateOfAttendance)] = [];
+                }
+                let isNew = true;
+                for (const z of y.attendance[String(x.dateOfAttendance)]) {
+                    if (x.mod === z.mod) {
+                        isNew = false;
+                    }
+                }
+                if (isNew) {
+                    y.attendance[String(x.dateOfAttendance)].push({ date: x.dateOfAttendance, mod: x.mod, minutes: x.minutesForTutor });
+                }
+            }
+            if (x.learner !== -1) {
+                const y = learners[String(x.learner)];
+                if (y.attendance[String(x.dateOfAttendance)] === undefined) {
+                    y.attendance[String(x.dateOfAttendance)] = [];
+                }
+                y.attendance[String(x.dateOfAttendance)].push({ date: x.dateOfAttendance, mod: x.mod, minutes: x.minutesForLearner });
+            }
+        }
+        Logger.log('part 2');
+        // index whether a tutor should be showing up
+        const tutorShouldBeShowingUp: { [id: string]: { [mod: string]: boolean } } = {};
+        for (const tutor of tutorsArray) {
+            tutorShouldBeShowingUp[String(tutor.id)] = {};
+        }
+        for (const matching of Object_values(matchings)) {
+            if (matching.status === 'finalized') {
+                tutorShouldBeShowingUp[String(matching.tutor)][matching.mod] = true;
+            }
+        }
+
+        Logger.log(JSON.stringify(tutorShouldBeShowingUp));
+
+        // mark absences
+        let numAbsencesChanged = 0;
+        for (const day of Object_values(attendanceDays)) {
+            // round down to the nearest 24-hour day
+            day.dateOfAttendance = roundDownToDay(day.dateOfAttendance);
+
+            if (day.status === 'upcoming' || day.status === 'finalized' || day.status === 'reset') {
+                // ignore
+            } else if (day.status === 'unfinalized' || day.status === 'unreset') {
+                let isBDay: boolean = null;
+                if (day.abDay.toLowerCase().charAt(0) === 'a') {
+                    isBDay = false;
+                } else if (day.abDay.toLowerCase().charAt(0) === 'b') {
+                    isBDay = true;
+                } else {
+                    throw new Error('unrecognized attendance day letter');
+                }
+                for (const tutor of tutorsArray) {
+                    Logger.log(JSON.stringify(tutor));
+                    for (const mod of tutor.mods) {
+                        if (isBDay ? (10 < mod) : (mod <= 10)) {
+                            if (tutorShouldBeShowingUp[String(tutor.id)][String(mod)] === true) {
+                                // mark tutor as (un-?)absent at a specific date and mod
+                                if (day.status === 'unreset') {
+                                    if (tutor.attendance[day.dateOfAttendance] !== undefined) {
+                                        tutor.attendance[day.dateOfAttendance] = tutor.attendance[day.dateOfAttendance].filter((x: any) => {
+                                            if (x.mod === mod && x.minutes === 0) {
+                                                ++numAbsencesChanged;
+                                                return false;
+                                            } else {
+                                                return true;
+                                            }
+                                        });
+                                    }
+                                }
+                                if (day.status === 'unfinalized') {
+                                    let alreadyExists = false; // if a presence or absence exists, don't add an absence
+                                    if (tutor.attendance[day.dateOfAttendance] === undefined) {
+                                        tutor.attendance[day.dateOfAttendance] = [];
+                                    } else {
+                                        for (const x of tutor.attendance[day.dateOfAttendance]) {
+                                            if (x.mod === mod) {
+                                                alreadyExists = true;
+                                            }
+                                        }
+                                    }
+                                    if (!alreadyExists) {
+                                        // add an absence!
+                                        tutor.attendance[day.dateOfAttendance].push({ date: day.dateOfAttendance, mod, minutes: 0 });
+                                        ++numAbsencesChanged;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (tutor.attendance[day.dateOfAttendance] !== undefined && tutor.attendance[day.dateOfAttendance].length === 0) {
+                        delete tutor.attendance[day.dateOfAttendance];
+                    }
+                }
+
+                // change day status
+                if (day.status === 'unreset') {
+                    day.status = 'reset';
+                }
+                if (day.status === 'unfinalized') {
+                    day.status = 'finalized';
+                }
+                tableMap.attendanceDays().updateRecord(day);
+            } else {
+                throw new Error('unknown day status');
+            }
+        }
+
+        // update table
+        tableMap.tutors().updateAllRecords(tutorsArray);
+
+        SpreadsheetApp.getUi().alert(`Finished attendance update. ${numAbsencesChanged} absences were changed.`);
     } catch (err) {
         Logger.log(stringifyError(err));
         throw err;
@@ -829,16 +1218,17 @@ function onGenerateSchedule() {
     }
 }
 
-
 function onOpen(_ev: any) {
     const menu = SpreadsheetApp.getUi().createMenu('ARC APP');
-    menu.addItem('Sync data from request forms', 'onSyncForms');
+    menu.addItem('Sync data from forms', 'onSyncForms');
     menu.addItem('Generate schedule', 'onGenerateSchedule');
+    menu.addItem('Recalculate attendance', 'onRecalculateAttendance');
     if (ARC_APP_DEBUG_MODE) {
         menu.addItem('Debug: test client API', 'debugClientApiTest');
         menu.addItem('Debug: reset all tables', 'debugResetEverything');
         menu.addItem('Debug: reset all small tables', 'debugResetAllSmallTables');
         menu.addItem('Debug: rebuild all headers', 'debugHeaders');
+        menu.addItem('Debug: rewrite all tables', 'debugRewriteEverything');
     }
     menu.addToUi();
 }
