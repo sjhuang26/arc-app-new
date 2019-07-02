@@ -38,6 +38,16 @@ UTILITIES
 
 */
 
+// This function converts mod numbers (ie. 11) into A-B-day strings (ie. 1B).
+export function stringifyMod(mod: number) {
+    if (1 <= mod && mod <= 10) {
+        return String(mod) + 'A';
+    } else if (11 <= mod && mod <= 20) {
+        return String(mod - 10) + 'B';
+    }
+    throw new Error(`mod ${mod} isn't serializable`);
+}
+
 function stringifyError(error: any): string {
     if (error instanceof Error) {
         return JSON.stringify(error, Object.getOwnPropertyNames(error));
@@ -79,10 +89,10 @@ class NumberField extends Field {
         super(name);
     }
     parse(x: any) {
-        return x;
+        return Number(x);
     }
     serialize(x: any) {
-        return x;
+        return Number(x);
     }
 }
 
@@ -190,7 +200,8 @@ class Table {
                 new DateField('date'),
                 new NumberField('learner'),
                 new JsonField('mods'),
-                new StringField('subject')
+                new StringField('subject'),
+                new StringField('specialRoom')
             ]
         },
         requestSubmissions: {
@@ -200,7 +211,10 @@ class Table {
                 new DateField('date'),
                 ...Table.makeBasicStudentConfig(),
                 new JsonField('mods'),
-                new StringField('subject')
+                new StringField('subject'),
+                new NumberField('studentId'),
+                new StringField('specialRoom'),
+                new StringField('status')
             ]
         },
         bookings: {
@@ -223,7 +237,8 @@ class Table {
                 new NumberField('tutor'),
                 new StringField('subject'),
                 new NumberField('mod'),
-                new StringField('status')
+                new StringField('status'),
+                new StringField('specialRoom')
             ]
         },
         requestForm: {
@@ -270,6 +285,40 @@ class Table {
                 new StringField('iceCreamQuestion')
             ]
         },
+        specialRequestForm: {
+            sheetName: '$special-request-form',
+            isForm: true,
+            fields: [
+                /*
+                Layout of form:
+                    Timestamp
+                    Legal first name
+                    Legal last name
+                    Short friendly name (ie. "Jeffrey")
+                    Full friendly name (ie. "Jeffrey Huang")
+                    Student ID (ie. "20186")
+                    Grade
+                    What subject(s) do you want to be tutored in? You can write "all subjects" if needed.
+                    A days or B days?
+                    Which mod?
+                    What room number?
+                    What is your favorite flavor of ice cream?
+                */
+                new DateField('date'),
+                new StringField('firstName'),
+                new StringField('lastName'),
+                new StringField('friendlyName'),
+                new StringField('friendlyFullName'),
+                new NumberField('studentId'),
+                new NumberField('grade'),
+                new StringField('subject'),
+                new StringField('abDay'),
+                new NumberField('mod1To10'),
+                new StringField('specialRoom'),
+                new StringField('iceCreamQuestion')
+                // contact info is intentionally omitted
+            ]
+        },
         operationLog: {
             sheetName: '$operation-log',
             fields: [
@@ -302,19 +351,33 @@ class Table {
                 throw new Error(`table ${this.name} not found, and it's supposed to be a form`);
             } else {
                 this.sheet = SpreadsheetApp.getActive().insertSheet(this.tableInfo.sheetName);
-                this.sheet.getRange(1, 1, 1, this.tableInfo.fields.length).setValues([this.tableInfo.fields.map(field => field.name)]);    
+                this.rebuildSheetHeadersIfNeeded();
             }
+        }
+    }
+
+    rebuildSheetHeadersIfNeeded() {
+        if (!this.isForm) {
+            const col = this.sheet.getLastColumn();
+            this.sheet.getRange(1, 1, 1, col === 0 ? 1 : col).clearContent();
+            this.sheet.getRange(1, 1, 1, this.tableInfo.fields.length).setValues([this.tableInfo.fields.map(field => field.name)]);
         }
     }
 
     resetEntireSheet() {
         if (!this.isForm) {
-            SpreadsheetApp.getActive().deleteSheet(this.sheet);
+            this.sheet.getDataRange().clearContent();
         }
-        this.rebuildSheetIfNeeded();
+        this.rebuildSheetHeadersIfNeeded();
     }
 
     retrieveAllRecords(): RecCollection {
+        if (ARC_APP_DEBUG_MODE) {
+            this.rebuildSheetHeadersIfNeeded();
+        }
+        if (this.sheet.getLastColumn() !== this.tableInfo.fields.length) {
+            throw new Error(`something's wrong with the columns of table ${this.name} (${this.tableInfo.fields.length})`)
+        }
         const raw = this.sheet.getDataRange().getValues();
         const res = {};
         for (let i = 1; i < raw.length; ++i) {
@@ -326,9 +389,10 @@ class Table {
 
     parseRecord(raw: any[]): Rec {
         const rec: { [key: string]: any } = {};
-        for (let i = 0; i < raw.length; ++i) {
+        for (let i = 0; i < this.tableInfo.fields.length; ++i) {
             const field = this.tableInfo.fields[i];
-            rec[field.name] = field.parse(raw[i]);
+            // this accounts for blanks in the last field
+            rec[field.name] = field.parse(raw[i] === undefined ? '' : raw[i]);
         }
         if (this.isForm) {
             // forms don't have an id field, so copy the date into the id
@@ -358,24 +422,29 @@ class Table {
             throw new Error('getRowById not supported for forms');
         }
 
-        const mat: any[][] = this.sheet.getRange(1, 1, this.sheet.getLastRow()).getValues();
-        let matchingRow = -1;
-        for (const [ v ] of mat) {
-            if (v === id) {
-                if (matchingRow !== -1) {
-                    throw new Error(`duplicate ID ${String(v)} in table ${String(this.name)}`);
+        // because the first row is headers, we ignore it and start from the second row
+        const mat: any[][] = this.sheet.getRange(2, 1, this.sheet.getLastRow() - 1).getValues();
+        let rowNum = -1;
+        for (let i = 0; i < mat.length; ++i) {
+            const cell: number = mat[i][0];
+            if (typeof cell !== 'number') {
+                throw new Error(`id at location ${String(i)} is not a number in table ${String(this.name)}`);
+            }
+            if (cell === id) {
+                if (rowNum !== -1) {
+                    throw new Error(`duplicate ID ${String(id)} in table ${String(this.name)}`);
                 }
-                matchingRow = v;
+                rowNum = i + 2; // i = 0 <=> second row (rows are 1-indexed)
             }
         }
-        if (matchingRow == -1) {
+        if (rowNum == -1) {
             throw new Error(`ID ${String(id)} not found in table ${String(this.name)}`);
         }
-        return matchingRow;
+        return rowNum;
     }
 
     updateRecord(editedRecord: Rec): void {
-        this.sheet.getRange(this.getRowById(editedRecord.id), 1, 1, this.sheet.getLastColumn()).setValues(this.serializeRecord(editedRecord));
+        this.sheet.getRange(this.getRowById(editedRecord.id), 1, 1, this.sheet.getLastColumn()).setValues([this.serializeRecord(editedRecord)]);
     }
 
     deleteRecord(id: number): void {
@@ -420,6 +489,14 @@ class Table {
             onClientNotification(['delete', this.name, args[1]]);
             return null;
         }
+        if (args[0] === 'debugheaders') {
+            this.rebuildSheetHeadersIfNeeded();
+            return null;
+        }
+        if (args[0] === 'debugreseteverything') {
+            this.resetEntireSheet();
+            return null;
+        }
         throw new Error('args not matched');
     }
 }
@@ -439,6 +516,7 @@ const tableMap: TableMap = {
     ...tableMapBuild('bookings'),
     ...tableMapBuild('matchings'),
     ...tableMapBuild('requestForm'),
+    ...tableMapBuild('specialRequestForm'),
     ...tableMapBuild('operationLog')
 };
 
@@ -461,31 +539,39 @@ function tableMapBuild(name: string) {
 
 const ARC_APP_DEBUG_MODE: boolean = true;
 
-function onClientAsk(args: any[]): ServerResponse<any> {
-    function processClientAsk(path: any[]) {
-        const resourceName: string = args[0];
-        if (resourceName === undefined) {
-            throw new Error('no args, or must specify resource name');
-        }
-        if (tableMap[resourceName] === undefined) {
-            throw new Error(`resource ${String(resourceName)} not found`);
-        }
-        const resource = tableMap[resourceName]();
-        return resource.processClientAsk(args.slice(1));
+function processClientAsk(args: any[]): ServerResponse<any> {
+    const resourceName: string = args[0];
+    if (resourceName === undefined) {
+        throw new Error('no args, or must specify resource name');
     }
+    if (tableMap[resourceName] === undefined) {
+        throw new Error(`resource ${String(resourceName)} not found`);
+    }
+    const resource = tableMap[resourceName]();
+    return {
+        error: false,
+        val: resource.processClientAsk(args.slice(1)),
+        message: null
+    };
+}
+
+function onClientAsk(args: any[]): string {
+    let returnValue = {
+        error: true,
+        val: null,
+        message: 'Mysterious error'
+    };
     try {
-        return {
-            error: false,
-            val: processClientAsk(args),
-            message: null
-        };
+        returnValue = processClientAsk(args);   
     } catch (err) {
-        return {
+        returnValue = {
             error: true,
             val: null,
             message: stringifyError(err)
         };
     }
+    // If you send a too-big object, Google Apps Script doesn't let you do it, and null is returned. But if you stringify it, you're fine.
+    return JSON.stringify(returnValue);
 }
 
 function onClientNotification(args: any[]): void {
@@ -498,29 +584,106 @@ function onClientNotification(args: any[]): void {
 }
 
 function debugClientApiTest() {
-    const ui = SpreadsheetApp.getUi();
-    const response = ui.prompt('Enter args as JSON array');
-    ui.alert(JSON.stringify(onClientAsk(JSON.parse(response.getResponseText()))));
-}
-
-function debugResetEverything() {
-    const ui = SpreadsheetApp.getUi();
-    const response = ui.prompt('Leave the box below blank to cancel debug operation.');
-    if (response.getResponseText() === 'DEBUG_RESET') {
-        for (const name of Object.getOwnPropertyNames(tableMap)) {
-            tableMap[name]().resetEntireSheet();
-        }
+    try {
+        const ui = SpreadsheetApp.getUi();
+        const response = ui.prompt('Enter args as JSON array');
+        ui.alert(JSON.stringify(onClientAsk(JSON.parse(response.getResponseText()))));
+    } catch (err) {
+        Logger.log(stringifyError(err));
+        throw err;
     }
 }
 
-// Essentially, this syncs requestsubmissions <> requestform and does all the necessary data processing.
-function onSyncRequestForm() {
-    const requestSubmissionsTable = tableMap.requestSubmissions();
-    const requestSubmissions = requestSubmissionsTable.retrieveAllRecords();
-    const requestForm = tableMap.requestForm().retrieveAllRecords();
+function debugHeaders() {
+    try {
+        for (const name of Object.getOwnPropertyNames(tableMap)) {
+            tableMap[name]().rebuildSheetHeadersIfNeeded();
+        }
+    } catch (err) {
+        Logger.log(stringifyError(err));
+        throw err;
+    }
+}
 
-    function syncRequestFormRecord(r: Rec) {
-        Logger.log(JSON.stringify(r));
+function debugResetAllSmallTables() {
+    try {
+        const ui = SpreadsheetApp.getUi();
+        const response = ui.prompt('Leave the box below blank to cancel debug operation.');
+        if (response.getResponseText() === 'DEBUG_SMALL_RESET') {
+            for (const name of Object.getOwnPropertyNames(tableMap)) {
+                const table = tableMap[name]();
+                if (Object.getOwnPropertyNames(table.retrieveAllRecords()).length < 5) {
+                    table.resetEntireSheet();
+                }
+            }
+        }
+    } catch (err) {
+        Logger.log(stringifyError(err));
+        throw err;
+    }
+}
+
+function debugResetEverything() {
+    try {
+        const ui = SpreadsheetApp.getUi();
+        const response = ui.prompt('Leave the box below blank to cancel debug operation.');
+        if (response.getResponseText() === 'DEBUG_RESET') {
+            for (const name of Object.getOwnPropertyNames(tableMap)) {
+                tableMap[name]().resetEntireSheet();
+            }
+        }
+    } catch (err) {
+        Logger.log(stringifyError(err));
+        throw err;
+    }
+}
+
+function doFormSync(formTable: Table, actualTable: Table, formRecordToActualRecord: (formRecord: Rec) => Rec): number {
+    const actualRecords = actualTable.retrieveAllRecords();
+    const formRecords = formTable.retrieveAllRecords();
+
+    let numOfThingsSynced = 0;
+
+    // create an index of actualdata >> date.
+    // Then iterate over all formdata and find the ones that are missing from the index.
+    const index: { [date: string]: Rec } = {};
+    for (const idKey of Object.getOwnPropertyNames(actualRecords)) {
+        const record = actualRecords[idKey];
+        if (record.status === 'unchecked') { // record status MUST be unchecked for it to count!
+            const dateIndexKey = String(record.date);
+            index[dateIndexKey] = record;
+        }
+    }
+    for (const idKey of Object.getOwnPropertyNames(formRecords)) {
+        const record = formRecords[idKey];
+        const dateIndexKey = String(record.date);
+        if (index[dateIndexKey] === undefined) {
+            actualTable.createRecord(formRecordToActualRecord(record));
+            ++numOfThingsSynced;
+        }
+    }
+
+    return numOfThingsSynced;
+}
+
+function onSyncForms() {
+    // parsing contact preferences
+    function parseContactPref(s: string) {
+        if (s === 'Phone') return 'phone';
+        if (s === 'Email') return 'email';
+        return 'either';
+    }
+
+    // parsing grade
+    function parseGrade(g: string) {
+        if (g === 'Freshman') return 9;
+        if (g === 'Sophomore') return 10;
+        if (g === 'Junior') return 11;
+        if (g === 'Senior') return 12;
+        return 0;
+    }
+
+    function processRequestFormRecord(r: Rec): Rec {
         // parsing mod data
         function parseCommas(d: string) {
             return d
@@ -534,14 +697,7 @@ function onSyncRequestForm() {
         const mA60: number[] = parseCommas(r.modDataA6To10);
         const mB60: number[] = parseCommas(r.modDataB6To10).map(x => x + 10);
 
-        // parsing contact preferences
-        function parseContactPref(s: string) {
-            if (s === 'Phone') return 'phone';
-            if (s === 'Email') return 'email';
-            return 'either';
-        }
-
-        requestSubmissionsTable.createRecord({
+        return {
             id: -1,
             date: r.date, // the date MUST be the date from the form
             firstName: r.firstName,
@@ -549,44 +705,140 @@ function onSyncRequestForm() {
             friendlyName: r.friendlyName,
             friendlyFullName: r.friendlyFullName,
             studentId: r.studentId,
-            grade: r.grade,
+            grade: parseGrade(r.grade),
             subject: r.subject,
             mods: mA15.concat(mA60).concat(mB15).concat(mB60),
             email: r.email,
             phone: r.phone,
-            contactPref: r.contactPref
-        });
-    }
+            contactPref: parseContactPref(r.contactPref),
+            specialRoom: '',
 
-    let numOfThingsSynced = 0;
-
-    // create an index of requestsubmissions >> date.
-    // Then iterate over all requestform and find the ones that are missing from the index.
-    const index: { [date: string]: Rec } = {};
-    for (const idKey of Object.getOwnPropertyNames(requestSubmissions)) {
-        const record = requestSubmissions[idKey];
-        const dateIndexKey = String(record.date);
-        index[dateIndexKey] = record;
+            status: 'unchecked'
+        };
     }
-    for (const idKey of Object.getOwnPropertyNames(requestForm)) {
-        const record = requestForm[idKey];
-        const dateIndexKey = String(record.date);
-        if (index[dateIndexKey] === undefined) {
-            syncRequestFormRecord(record);
-            ++numOfThingsSynced;
+    function processSpecialRequestFormRecord(r: Rec): Rec {
+        function parseModInfo(abDay: string, mod1To10: number): number {
+            // polyfill
+            // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/startsWith#Polyfill
+            function startsWith(search, pos) {
+                pos = !pos || pos < 0 ? 0 : +pos;
+                return this.substring(pos, pos + search.length) === search;
+            }
+
+            if (abDay.toLowerCase().charAt(0) === 'a') {
+                return mod1To10;
+            }
+            if (abDay.toLowerCase().charAt(0) === 'b') {
+                return mod1To10 + 10;
+            }
+            throw new Error(`${String(abDay)} does not start with A or B`);
         }
+        return {
+            id: -1,
+            date: r.date, // the date MUST be the date from the form
+            firstName: r.firstName,
+            lastName: r.lastName,
+            friendlyName: r.friendlyName,
+            friendlyFullName: r.friendlyFullName,
+            studentId: r.studentId,
+            grade: parseGrade(r.grade),
+            subject: r.subject,
+            specialRoom: r.specialRoom,
+
+            email: '',
+            phone: '',
+            contactPref: 'either',
+            mods: [parseModInfo(r.abDay, r.mod1To10)],
+
+            status: 'unchecked'
+        };
     }
 
-    // alert the user
-    SpreadsheetApp.getUi().alert(`Sync completed! ${numOfThingsSynced} new request submissions were found.`);
+    try {
+        let numOfThingsSynced = 0;
+        numOfThingsSynced += doFormSync(tableMap.requestForm(), tableMap.requestSubmissions(), processRequestFormRecord);
+        numOfThingsSynced += doFormSync(tableMap.specialRequestForm(), tableMap.requestSubmissions(), processSpecialRequestFormRecord);
+        SpreadsheetApp.getUi().alert(`Finished sync! ${numOfThingsSynced} new tutor requests found.`);
+    } catch (err) {
+        Logger.log(stringifyError(err));
+        throw err;
+    }
 }
+
+// This generates a schedule that is written to a new sheet.
+function onGenerateSchedule() {
+    try {
+        // Delete & insert sheet
+        let ss = SpreadsheetApp.getActive();
+        let sheet = ss.getSheetByName('schedule');
+        if (sheet !== null) {
+            ss.deleteSheet(sheet);
+        }
+        sheet = ss.insertSheet('schedule', 0);
+        
+        // Get all matchings, tutors, and learners
+        const matchings = tableMap.matchings().retrieveAllRecords();
+        const tutors = tableMap.tutors().retrieveAllRecords();
+        const learners = tableMap.learners().retrieveAllRecords();
+
+        // Header
+        sheet.appendRow(['ARC SCHEDULE']);
+        sheet.appendRow([`Automatically generated on ${new Date()}`]);
+
+        // Figure out all matchings that are finalized, indexed by tutor
+        const index: { [tutorId: string]: Rec[] } = {};
+        for (const tutorKey of Object.getOwnPropertyNames(tutors)) {
+            const r = tutors[tutorKey];
+            const idx = r.id;
+            index[idx] = [];
+        }
+        for (const idKey of Object.getOwnPropertyNames(matchings)) {
+            const r = matchings[idKey];
+            const idx = r.tutor;
+            if (r.status === 'finalized') {
+                index[idx].push(r);
+            }
+        }
+
+        // Sort the index, first reformatting it as a 2D matrix
+        const tutorAndRecordsArray: [ string, Rec[] ][] = [];
+        for (const i of Object.getOwnPropertyNames(index)) {
+            tutorAndRecordsArray.push([tutors[i].friendlyFullName, index[i]]);
+        }
+        tutorAndRecordsArray.sort((a, b) => {
+            const x = a[0].toLowerCase();
+            const y = b[0].toLowerCase();
+            if (x < y) return -1;
+            if (x > y) return 1;
+            return 0;
+        });
+        
+        // Print!
+        for (const [ tutorName, matchings ] of tutorAndRecordsArray) {
+            for (const matching of matchings) {
+                sheet.appendRow([tutorName, stringifyMod(matching.mod), learners[matching.learner].friendlyFullName]);
+            }
+            if (matchings.length === 0) {
+                sheet.appendRow([tutorName, 'no one']);
+            }
+        }
+        sheet.appendRow([`That's all!`]);
+    } catch (err) {
+        Logger.log(stringifyError(err));
+        throw err;
+    }
+}
+
 
 function onOpen(_ev: any) {
     const menu = SpreadsheetApp.getUi().createMenu('ARC APP');
-    menu.addItem('Sync data from request form', 'onSyncRequestForm');
+    menu.addItem('Sync data from request forms', 'onSyncForms');
+    menu.addItem('Generate schedule', 'onGenerateSchedule');
     if (ARC_APP_DEBUG_MODE) {
         menu.addItem('Debug: test client API', 'debugClientApiTest');
         menu.addItem('Debug: reset all tables', 'debugResetEverything');
+        menu.addItem('Debug: reset all small tables', 'debugResetAllSmallTables');
+        menu.addItem('Debug: rebuild all headers', 'debugHeaders');
     }
     menu.addToUi();
 }
