@@ -390,6 +390,70 @@ class Table {
                 new StringField('presence')
             ]
         },
+        tutorRegistrationForm: {
+            /*
+            Layout of form:
+                Timestamp
+                Legal first name
+                Legal last name
+                Short friendly name (ie. "Jeffrey")
+                Full friendly name (ie. "Jeffrey Huang")
+                Student ID (ie. "20186")
+                Grade
+                Email
+                Phone (XXX-XXX-XXXX)
+                What kind of contact do you prefer?
+                All mods available (part 1) [A]
+                All mods available (part 1) [B]
+                All mods available (part 2) [A]
+                All mods available (part 2) [B]
+                Mods preferred (part 1) [A]
+                Mods preferred (part 1) [B]
+                Mods preferred (part 2) [A]
+                Mods preferred (part 2) [B]
+                Subjects: English
+                Subjects: Social Studies
+                Subjects: Math
+                Subjects: Foreign languages
+                Subjects: Science
+                Subjects: Computer Science
+                Subjects: Other
+                Subjects: Anything else?
+                Favorite flavor of ice cream?
+                You win if you pick the number that the fewest other people choose .... Think wisely, and be unique!
+            */
+            sheetName: '$tutor-registration-form',
+            fields: [
+                new DateField('date'),
+                new StringField('firstName'),
+                new StringField('lastName'),
+                new StringField('friendlyName'),
+                new StringField('friendlyFullName'),
+                new NumberField('studentId'),
+                new NumberField('grade'),
+                new StringField('email'),
+                new StringField('phone'),
+                new StringField('contactPref'),
+                new StringField('modDataA1To5'),
+                new StringField('modDataB1To5'),
+                new StringField('modDataA6To10'),
+                new StringField('modDataB6To10'),
+                new StringField('modDataPrefA1To5'),
+                new StringField('modDataPrefB1To5'),
+                new StringField('modDataPrefA6To10'),
+                new StringField('modDataPrefB6To10'),
+                new StringField('subjects0'),
+                new StringField('subjects1'),
+                new StringField('subjects2'),
+                new StringField('subjects3'),
+                new StringField('subjects4'),
+                new StringField('subjects5'),
+                new StringField('subjects6'),
+                new StringField('subjects7'),
+                new StringField('iceCreamQuestion'),
+                new StringField('numberGuessQuestion')
+            ]
+        },
         attendanceLog: {
             // this table is merged into the JSON of tutor.fields.attendance
             // the table will get quite large, so we will hand-archive it from time to time
@@ -652,7 +716,8 @@ const tableMap: TableMap = {
     ...tableMapBuild('attendanceForm'),
     ...tableMapBuild('attendanceLog'),
     ...tableMapBuild('operationLog'),
-    ...tableMapBuild('attendanceDays')
+    ...tableMapBuild('attendanceDays'),
+    ...tableMapBuild('tutorRegistrationForm')
 };
 
 function doGet() {
@@ -857,37 +922,65 @@ function onSyncForms() {
         throw new Error(`${String(abDay)} does not start with A or B`);
     }
 
-    function processRequestFormRecord(r: Rec): Rec {
-        // parsing mod data
-        function parseCommas(d: string) {
+    function parseModData(modData: string[]): number[] {
+        function doParse(d: string) {
             return d
                 .split(',')
                 .map(x => x.trim())
                 .filter(x => x !== '' && x !== 'None')
                 .map(x => parseInt(x));
         }
-        const mA15: number[] = parseCommas(r.modDataA1To5);
-        const mB15: number[] = parseCommas(r.modDataB1To5).map(x => x + 10);
-        const mA60: number[] = parseCommas(r.modDataA6To10);
-        const mB60: number[] = parseCommas(r.modDataB6To10).map(x => x + 10);
+        const mA15: number[] = doParse(modData[0]);
+        const mB15: number[] = doParse(modData[1]).map(x => x + 10);
+        const mA60: number[] = doParse(modData[2]);
+        const mB60: number[] = doParse(modData[3]).map(x => x + 10);
+        return mA15.concat(mA60).concat(mB15).concat(mB60);
+    }
 
+    function parseStudentConfig(r: Rec): To<any> {
         return {
-            id: -1,
-            date: r.date, // the date MUST be the date from the form
             firstName: r.firstName,
             lastName: r.lastName,
             friendlyName: r.friendlyName,
             friendlyFullName: r.friendlyFullName,
-            studentId: r.studentId,
             grade: parseGrade(r.grade),
-            subject: r.subject,
-            mods: mA15.concat(mA60).concat(mB15).concat(mB60),
+            studentId: r.studentId,
             email: r.email,
             phone: r.phone,
-            contactPref: parseContactPref(r.contactPref),
-            specialRoom: '',
+            contactPref: parseContactPref(r.contactPref)
+        };
+    }
 
+    function processRequestFormRecord(r: Rec): Rec {
+        return {
+            id: -1,
+            date: r.date, // the date MUST be the date from the form; this is used for syncing
+            subject: r.subject,
+            mods: parseModData([r.modDataA1To5, r.modDataB1To5, r.modDataA6To10, r.modDataB6To10]),
+            specialRoom: '',
+            ...parseStudentConfig(r),
             status: 'unchecked'
+        };
+    }
+    function processTutorRegistrationFormRecord(r: Rec): Rec {
+        function parseSubjectList(d: string[]) {
+            return d
+                .join(',')
+                .split(',') // remember that within each string there are commas
+                .map(x => x.trim())
+                .filter(x => x !== '' && x !== 'None')
+                .map(x => String(x))
+                .join(',');
+        }
+        return {
+            id: -1,
+            date: r.date,
+            ...parseStudentConfig(r),
+            mods: parseModData([r.modDataA1To5, r.modDataB1To5, r.modDataA6To10, r.modDataB6To10]),
+            modsPref: parseModData([r.modDataPrefA1To5, r.modDataPrefB1To5, r.modDataPrefA6To10, r.modDataPrefB6To10]),
+            subjectList: parseSubjectList([r.subjects0, r.subjects1, r.subjects2, r.subjects3, r.subjects4, r.subjects5, r.subjects6, r.subjects7]),
+            attendance: {},
+            dropInMods: []
         };
     }
     function processSpecialRequestFormRecord(r: Rec): Rec {
@@ -1018,6 +1111,7 @@ function onSyncForms() {
         numOfThingsSynced += doFormSync(tableMap.requestForm(), tableMap.requestSubmissions(), processRequestFormRecord);
         numOfThingsSynced += doFormSync(tableMap.specialRequestForm(), tableMap.requestSubmissions(), processSpecialRequestFormRecord);
         numOfThingsSynced += doFormSync(tableMap.attendanceForm(), tableMap.attendanceLog(), processAttendanceFormRecord);
+        numOfThingsSynced += doFormSync(tableMap.tutorRegistrationForm(), tableMap.tutors(), processTutorRegistrationFormRecord);
         SpreadsheetApp.getUi().alert(`Finished sync! ${numOfThingsSynced} new form submits found.`);
     } catch (err) {
         Logger.log(stringifyError(err));
