@@ -431,7 +431,7 @@ class Table {
                 new StringField('friendlyName'),
                 new StringField('friendlyFullName'),
                 new NumberField('studentId'),
-                new NumberField('grade'),
+                new StringField('grade'),
                 new StringField('email'),
                 new StringField('phone'),
                 new StringField('contactPref'),
@@ -452,7 +452,7 @@ class Table {
                 new StringField('subjects6'),
                 new StringField('subjects7'),
                 new StringField('iceCreamQuestion'),
-                new StringField('numberGuessQuestion')
+                new NumberField('numberGuessQuestion')
             ]
         },
         attendanceLog: {
@@ -971,7 +971,7 @@ function onSyncForms() {
                 .map(x => x.trim())
                 .filter(x => x !== '' && x !== 'None')
                 .map(x => String(x))
-                .join(',');
+                .join(', ');
         }
         return {
             id: -1,
@@ -988,19 +988,10 @@ function onSyncForms() {
         return {
             id: -1,
             date: r.date, // the date MUST be the date from the form
-            firstName: r.firstName,
-            lastName: r.lastName,
-            friendlyName: r.friendlyName,
-            friendlyFullName: r.friendlyFullName,
-            studentId: r.studentId,
-            grade: parseGrade(r.grade),
             subject: r.subject,
             specialRoom: r.specialRoom,
-
-            email: '',
-            phone: '',
-            contactPref: 'either',
             mods: [parseModInfo(r.abDay, r.mod1To10)],
+            ...parseStudentConfig(r),
 
             status: 'unchecked'
         };
