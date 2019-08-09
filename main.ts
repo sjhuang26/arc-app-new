@@ -61,7 +61,7 @@ function onlyKeepUnique<T>(arr: T[]): T[] {
 }
 
 // polyfill of the typical Object.values()
-function Object_values<T>(o: To<T>): T[] {
+function Object_values<T>(o: ObjectMap<T>): T[] {
     const result: T[] = [];
     for (const i of Object.getOwnPropertyNames(o)) {
         result.push(o[i]);
@@ -98,7 +98,7 @@ function stringifyError(error: any): string {
     }
 }
 
-type To<T> = {
+type ObjectMap<T> = {
     [key: string]: T;
 }
 
@@ -187,6 +187,7 @@ interface TableInfo {
     isForm?: boolean;
 }
 
+// Short for Record. Avoids naming collision.
 type Rec = {
     [field: string]: any;
     id: number;
@@ -219,7 +220,7 @@ class Table {
         ]
     }
 
-    static tableInfoAll: To<TableInfo> = {
+    static tableInfoAll: ObjectMap<TableInfo> = {
         tutors: {
             sheetName: '$tutors',
             fields: [
@@ -634,7 +635,7 @@ class Table {
         }
         // because the first row is headers, we ignore it and start from the second row
         const mat: any[][] = this.sheet.getRange(2, 1, this.sheet.getLastRow() - 1).getValues();
-        let idRowMap: To<number> = {};
+        let idRowMap: ObjectMap<number> = {};
         for (let i = 0; i < mat.length; ++i) {
             idRowMap[String(mat[i][0])] = i + 2; // i = 0 <=> second row (rows are 1-indexed)
         }
@@ -937,7 +938,7 @@ function onSyncForms() {
         return mA15.concat(mA60).concat(mB15).concat(mB60);
     }
 
-    function parseStudentConfig(r: Rec): To<any> {
+    function parseStudentConfig(r: Rec): ObjectMap<any> {
         return {
             firstName: r.firstName,
             lastName: r.lastName,
