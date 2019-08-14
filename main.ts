@@ -2,7 +2,15 @@
  * @OnlyCurrentDoc
  */
 
- /*
+/*
+
+GLOBAL SETTINGS
+
+*/
+
+const ARC_APP_DEBUG_MODE: boolean = true;
+
+/*
 
 SERVER TYPES (COPIED FROM CLIENT)
 
@@ -506,7 +514,10 @@ class Table {
     constructor(name: string) {
         this.name = name;
         this.tableInfo = Table.tableInfoAll[name];
+
+        // Forms have important limitations in the app. We want to protect form data at all costs.
         this.isForm = !!this.tableInfo.isForm;
+
         if (this.tableInfo === undefined) {
             throw new Error(`table ${name} not found in tableInfoAll`);
         }
@@ -543,6 +554,7 @@ class Table {
         this.rebuildSheetHeadersIfNeeded();
     }
 
+    // This is useful for debug. It rewrites each cell with the content that the app *thinks* is inside the cell.
     rewriteEntireSheet() {
         if (!this.isForm) {
             this.updateAllRecords(Object_values(this.retrieveAllRecords()));
@@ -580,6 +592,7 @@ class Table {
         return rec as Rec;
     }
 
+    // Turn a JS object into an array of raw cell data, using each field object's built-in serializer.
     serializeRecord(record: Rec): any[] {
         return this.tableInfo.fields.map(field => field.serialize(record[field.name]));
     }
@@ -653,6 +666,7 @@ class Table {
 
     createNewId(): number {
         if (this.isForm) {
+            // There's no point! Forms don't have IDs, because the Date field is treated like an ID!
             throw new Error('ID generation not supported for forms');
         }
         const time = (new Date()).getTime();
@@ -664,6 +678,7 @@ class Table {
         return this.idCounter;
     }
 
+    // This is auto-called by the website (client) which is also known as the frontend.
     processClientAsk(args: any[]): any {
         if (this.isForm) {
             throw new Error('cannot access form tables from the client API');
@@ -698,13 +713,13 @@ class Table {
     }
 }
 
+// This is a way to prevent constructing six table objects every time the script is called.
+type TableMap = {
+    [name: string]: () => Table;
+}
 
-/*
-
-MAIN EVENTS
-
-*/
-
+// The point of this whole thing is so we don't read 10+ tables each time the script is run.
+// Tables are only loaded once you write the magic words: tableMap.NAMEOFTABLE().
 const tableMap: TableMap = {
     ...tableMapBuild('tutors'),
     ...tableMapBuild('learners'),
@@ -721,17 +736,7 @@ const tableMap: TableMap = {
     ...tableMapBuild('tutorRegistrationForm')
 };
 
-function doGet() {
-    // TODO: fix this
-    tableMap.operationLog().resetEntireSheet();
-
-    return HtmlService.createHtmlOutputFromFile('index');
-}
-
-// This is a way to prevent constructing six table objects every time the script is called.
-type TableMap = {
-    [name: string]: () => Table;
-}
+// This fancy code makes it so the table isn't loaded twice if you call tableMap.NAMEOFTABLE() twice.
 function tableMapBuild(name: string) {
     return {
         [name]: (() => {
@@ -747,7 +752,23 @@ function tableMapBuild(name: string) {
     };
 }
 
-const ARC_APP_DEBUG_MODE: boolean = true;
+/*
+
+IMPORTANT EVENT HANDLERS
+(CODE THAT DOES ALL THE USER ACTIONS NECESSARY IN THE BACKEND)
+(ALSO CODE THAT HANDLES SERVER-CLIENT INTERACTIONS)
+
+*/
+
+
+function doGet() {
+    // TODO: fix this
+    tableMap.operationLog().resetEntireSheet();
+
+    return HtmlService.createHtmlOutputFromFile('index');
+}
+
+
 
 function processClientAsk(args: any[]): ServerResponse<any> {
     const resourceName: string = args[0];
@@ -765,6 +786,7 @@ function processClientAsk(args: any[]): ServerResponse<any> {
     };
 }
 
+// this is the MAIN ENTRYPOINT that the client uses to ask the server for data.
 function onClientAsk(args: any[]): string {
     let returnValue = {
         error: true,
@@ -784,8 +806,11 @@ function onClientAsk(args: any[]): string {
     return JSON.stringify(returnValue);
 }
 
+// This, and anything related to it, is 100% TODO.
 function onClientNotification(args: any[]): void {
-    // we record the logs, and the client reads them every 20 seconds
+    // we record the logs
+    // TODO: have the client read them every 20 seconds so they know the things that other clients have done
+    // in the case that multiple clients are open at once
     tableMap.operationLog().createRecord({
         id: -1,
         date: -1,
@@ -804,6 +829,7 @@ function debugClientApiTest() {
     }
 }
 
+// This is a useful debug. It rewrites all the sheet headers to what the app thinks the sheet headers "should" be.
 function debugHeaders() {
     try {
         for (const name of Object.getOwnPropertyNames(tableMap)) {
@@ -815,6 +841,7 @@ function debugHeaders() {
     }
 }
 
+// Resets every table with length < 5. ONLY FOR DEMO PURPOSES. DO NOT RUN IN PRODUCTION.
 function debugResetAllSmallTables() {
     try {
         const ui = SpreadsheetApp.getUi();
@@ -833,6 +860,7 @@ function debugResetAllSmallTables() {
     }
 }
 
+// Completely wipes every single table in the database (except forms).
 function debugResetEverything() {
     try {
         const ui = SpreadsheetApp.getUi();
@@ -863,6 +891,13 @@ function debugRewriteEverything() {
     }
 }
 
+// This is a utility designed for onSyncForms().
+// Syncs between the formTable and the actualTable that we want to associate with it.
+// Basically, we use formRecordToActualRecord() to convert form records to actual records.
+// Then the actual records go in the actualTable.
+// But we only do this for form records that have dates that don't exist as IDs in actualTable.
+// (Remember that a form date === a record ID.)
+// There is NO DELETING RECORDS! No matter what!
 function doFormSync(formTable: Table, actualTable: Table, formRecordToActualRecord: (formRecord: Rec) => Rec): number {
     const actualRecords = actualTable.retrieveAllRecords();
     const formRecords = formTable.retrieveAllRecords();
@@ -891,6 +926,7 @@ function doFormSync(formTable: Table, actualTable: Table, formRecordToActualReco
 
 const MINUTES_PER_MOD = 38;
 
+// The main "sync forms" function that's crammed with form data formatting.
 function onSyncForms() {
     // tables
     const tutors = tableMap.tutors().retrieveAllRecords();
@@ -1114,8 +1150,6 @@ function onSyncForms() {
 // This recalculates the attendance.
 function onRecalculateAttendance() {
     try {
-        Logger.log('start');
-        
         let numAttendancesChanged = 0;
         
         // read tables
@@ -1125,7 +1159,6 @@ function onRecalculateAttendance() {
         const attendanceLog = tableMap.attendanceLog().retrieveAllRecords();
         const attendanceDays = tableMap.attendanceDays().retrieveAllRecords();
         const matchings = tableMap.matchings().retrieveAllRecords();
-        Logger.log('part 1');
         // combine presences
         for (const x of Object_values(attendanceLog)) {
             if (x.tutor !== -1) {
@@ -1161,7 +1194,6 @@ function onRecalculateAttendance() {
                 }
             }
         }
-        Logger.log('part 2');
         // index whether a tutor should be showing up
         const tutorShouldBeShowingUp: { [id: string]: { [mod: string]: boolean } } = {};
         for (const tutor of tutorsArray) {
@@ -1261,7 +1293,7 @@ function onRecalculateAttendance() {
     }
 }
 
-// This generates a schedule that is written to a new sheet.
+// This is the KEY FUNCTION for generating the "schedule" sheet.
 function onGenerateSchedule() {
     type ScheduleEntry = { mod: number, tutorName: string, info: string; isDropIn: boolean };
 
