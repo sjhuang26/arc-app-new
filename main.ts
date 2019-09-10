@@ -224,7 +224,9 @@ class Table {
             new NumberField('studentId'),
             new StringField('email'),
             new StringField('phone'),
-            new StringField('contactPref')
+            new StringField('contactPref'),
+            new StringField('homeroom'),
+            new StringField('homeroomTeacher')
         ]
     }
 
@@ -239,7 +241,10 @@ class Table {
                 new JsonField('modsPref'),
                 new StringField('subjectList'),
                 new JsonField('attendance'),
-                new JsonField('dropInMods')
+                new JsonField('dropInMods'),
+                new StringField('afterSchoolAvailability'),
+                new StringField('attendanceAnnotation'),
+                new NumberField('additionalHours')
             ]
         },
         learners: {
@@ -259,7 +264,8 @@ class Table {
                 new NumberField('learner'),
                 new JsonField('mods'),
                 new StringField('subject'),
-                new StringField('specialRoom')
+                new StringField('specialRoom'),
+                new NumberField('step')
             ]
         },
         requestSubmissions: {
@@ -295,7 +301,6 @@ class Table {
                 new NumberField('tutor'),
                 new StringField('subject'),
                 new NumberField('mod'),
-                new StringField('status'),
                 new StringField('specialRoom')
             ]
         },
