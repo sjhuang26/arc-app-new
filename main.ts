@@ -1270,37 +1270,32 @@ function onGenerateSchedule() {
 
         // fill in index with matchings
         for (const x of Object_values(matchings)) {
-            if (x.status === 'finalized') {
-                const name = learners[x.learner].friendlyFullName;
-                index[x.tutor].isMatched = true;
-                index[x.tutor].hasBeenScheduled = true;
-                scheduleInfo.push({
-                    isDropIn: false,
-                    mod: x.mod,
-                    tutorName: tutors[x.tutor].friendlyFullName,
-                    info: (x.specialRoom === '' || x.specialRoom === undefined) ? `(w/${name})` : `(w/${name} SPECIAL @room ${x.specialRoom})`
-                });
-            }
+            const name = learners[x.learner].friendlyFullName;
+            index[x.tutor].isMatched = true;
+            index[x.tutor].hasBeenScheduled = true;
+            scheduleInfo.push({
+                isDropIn: false,
+                mod: x.mod,
+                tutorName: tutors[x.tutor].friendlyFullName,
+                info: (x.specialRoom === '' || x.specialRoom === undefined) ? `(w/${name})` : `(w/${name} SPECIAL @room ${x.specialRoom})`
+            });
         }
 
         const unscheduledTutorNames: string[] = [];
 
         // fill in index with drop-ins
         for (const x of Object_values(tutors)) {
-            if (!index[String(x.id)].isMatched) {
-                for (const mod of x.dropInMods) {
-                    index[String(x.id)].hasBeenScheduled = true;
-                    scheduleInfo.push({
-                        isDropIn: true,
-                        mod,
-                        tutorName: x.friendlyFullName,
-                        info: '(drop in)'
-                    });
-                }
-                // unscheduled?
-                if (!index[String(x.id)].hasBeenScheduled) {
-                    unscheduledTutorNames.push(x.friendlyFullName);
-                }
+            for (const mod of x.dropInMods) {
+                index[String(x.id)].hasBeenScheduled = true;
+                scheduleInfo.push({
+                    isDropIn: true,
+                    mod,
+                    tutorName: x.friendlyFullName,
+                    info: '(drop in)'
+                });
+            }
+            if (!index[String(x.id)].hasBeenScheduled && !index[String(x.id)].isMatched) {
+                unscheduledTutorNames.push(x.friendlyFullName);
             }
         }
 
