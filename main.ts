@@ -265,7 +265,8 @@ class Table {
                 new JsonField('mods'),
                 new StringField('subject'),
                 new StringField('specialRoom'),
-                new NumberField('step')
+                new NumberField('step'),
+                new NumberField('chosenBooking')
             ]
         },
         requestSubmissions: {
@@ -311,24 +312,6 @@ class Table {
             isForm: true,
 
             fields: [
-                /* Layout of form
-                    Timestamp
-                    Legal first name
-                    Legal last name
-                    Short friendly name (ie. "Jeffrey")
-                    Full friendly name (ie. "Jeffrey Huang")
-                    Student ID (ie. "20186")
-                    Grade
-                    What subject(s) do you want to be tutored in?
-                    Mods available (ie. study halls, frees) (part 1) [A]
-                    Mods available (ie. study halls, frees) (part 1) [B]
-                    Mods available (part 2) [A]
-                    Mods available (part 2) [B]
-                    Email
-                    Phone (XXX-XXX-XXXX)
-                    What kind of contact do you prefer?
-                    What is your favorite flavor of ice cream?
-                */
                 // THE ORDER OF THE FIELDS MATTERS! They must match the order of the form's questions.
                 new DateField('date'),
                 new StringField('firstName'),
@@ -352,21 +335,6 @@ class Table {
             sheetName: '$special-request-form',
             isForm: true,
             fields: [
-                /*
-                Layout of form:
-                    Timestamp
-                    Legal first name
-                    Legal last name
-                    Short friendly name (ie. "Jeffrey")
-                    Full friendly name (ie. "Jeffrey Huang")
-                    Student ID (ie. "20186")
-                    Grade
-                    What subject(s) do you want to be tutored in? You can write "all subjects" if needed.
-                    A days or B days?
-                    Which mod?
-                    What room number?
-                    What is your favorite flavor of ice cream?
-                */
                 new DateField('date'),
                 new StringField('firstName'),
                 new StringField('lastName'),
@@ -386,57 +354,17 @@ class Table {
             sheetName: '$attendance-form',
             isForm: true,
             fields: [
-                /*
-                Layout of form:
-                    Timestamp
-                    Date (LEAVE BLANK if taking today's attendance)
-                    A or B day?
-                    Mod?
-                    Student ID?
-                    Is your learner/tutor present with you?
-                */
                 new DateField('date'),
                 new DateField('dateOfAttendance'), // optional in the form
                 new StringField('abDay'),
                 new NumberField('mod1To10'),
                 new NumberField('studentId'),
-                new StringField('learnerOrTutor'),
                 new StringField('presence')
             ]
         },
         tutorRegistrationForm: {
-            /*
-            Layout of form:
-                Timestamp
-                Legal first name
-                Legal last name
-                Short friendly name (ie. "Jeffrey")
-                Full friendly name (ie. "Jeffrey Huang")
-                Student ID (ie. "20186")
-                Grade
-                Email
-                Phone (XXX-XXX-XXXX)
-                What kind of contact do you prefer?
-                All mods available (part 1) [A]
-                All mods available (part 1) [B]
-                All mods available (part 2) [A]
-                All mods available (part 2) [B]
-                Mods preferred (part 1) [A]
-                Mods preferred (part 1) [B]
-                Mods preferred (part 2) [A]
-                Mods preferred (part 2) [B]
-                Subjects: English
-                Subjects: Social Studies
-                Subjects: Math
-                Subjects: Foreign languages
-                Subjects: Science
-                Subjects: Computer Science
-                Subjects: Other
-                Subjects: Anything else?
-                Favorite flavor of ice cream?
-                You win if you pick the number that the fewest other people choose .... Think wisely, and be unique!
-            */
             sheetName: '$tutor-registration-form',
+            isForm: true,
             fields: [
                 new DateField('date'),
                 new StringField('firstName'),
@@ -448,6 +376,9 @@ class Table {
                 new StringField('email'),
                 new StringField('phone'),
                 new StringField('contactPref'),
+                new StringField('homeroom'),
+                new StringField('homeroomTeacher'),
+                new StringField('afterSchoolAvailability'),
                 new StringField('modDataA1To5'),
                 new StringField('modDataB1To5'),
                 new StringField('modDataA6To10'),
@@ -485,7 +416,9 @@ class Table {
                 new NumberField('tutor'),
                 new NumberField('learner'),
                 new NumberField('minutesForTutor'),
-                new NumberField('minutesForLearner')
+                new NumberField('minutesForLearner'),
+                new StringField('presenceForTutor'),
+                new StringField('presenceForLearner')
             ]
         },
         attendanceDays: {
@@ -780,6 +713,18 @@ function processClientAsk(args: any[]): ServerResponse<any> {
     if (resourceName === undefined) {
         throw new Error('no args, or must specify resource name');
     }
+    if (resourceName === 'command') {
+        if (args[1] === 'syncDataFromForms') {
+            onSyncForms();
+        }
+        if (args[1] === 'recalculateAttendance') {
+            onRecalculateAttendance();
+        }
+        if (args[1] === 'generateSchedule') {
+            onGenerateSchedule();
+        }
+        throw new Error('unknown command');
+    }
     if (tableMap[resourceName] === undefined) {
         throw new Error(`resource ${String(resourceName)} not found`);
     }
@@ -935,7 +880,6 @@ const MINUTES_PER_MOD = 38;
 function onSyncForms() {
     // tables
     const tutors = tableMap.tutors().retrieveAllRecords();
-    const learners = tableMap.learners().retrieveAllRecords();
     const matchings = tableMap.matchings().retrieveAllRecords();
 
     // parsing contact preferences
@@ -989,7 +933,9 @@ function onSyncForms() {
             studentId: r.studentId,
             email: r.email,
             phone: r.phone,
-            contactPref: parseContactPref(r.contactPref)
+            contactPref: parseContactPref(r.contactPref),
+            homeroom: r.homeroom,
+            homeroomTeacher: r.homeroomTeacher
         };
     }
 
@@ -1001,7 +947,9 @@ function onSyncForms() {
             mods: parseModData([r.modDataA1To5, r.modDataB1To5, r.modDataA6To10, r.modDataB6To10]),
             specialRoom: '',
             ...parseStudentConfig(r),
-            status: 'unchecked'
+            status: 'unchecked',
+            homeroom: r.homeroom,
+            homeroomTeacher: r.homeroomTeacher
         };
     }
     function processTutorRegistrationFormRecord(r: Rec): Rec {
@@ -1022,7 +970,10 @@ function onSyncForms() {
             modsPref: parseModData([r.modDataPrefA1To5, r.modDataPrefB1To5, r.modDataPrefA6To10, r.modDataPrefB6To10]),
             subjectList: parseSubjectList([r.subjects0, r.subjects1, r.subjects2, r.subjects3, r.subjects4, r.subjects5, r.subjects6, r.subjects7]),
             attendance: {},
-            dropInMods: []
+            dropInMods: [],
+            afterSchoolAvailability: r.afterSchoolAvailability,
+            attendanceAnnotation: '',
+            additionalHours: 0
         };
     }
     function processSpecialRequestFormRecord(r: Rec): Rec {
@@ -1033,7 +984,8 @@ function onSyncForms() {
             specialRoom: r.specialRoom,
             mods: [parseModInfo(r.abDay, r.mod1To10)],
             ...parseStudentConfig(r),
-
+            homeroom: '[writing pass is unnecessary]',
+            homeroomTeacher: '[writing pass is unnecessary]',
             status: 'unchecked'
         };
     }
@@ -1044,86 +996,58 @@ function onSyncForms() {
         let validity = '';
         let minutesForTutor = -1;
         let minutesForLearner = -1;
-        if (r.learnerOrTutor === 'Learner') {
-            // give the learner their time
-            minutesForLearner = MINUTES_PER_MOD;
+        let presenceForTutor = '';
+        let presenceForLearner = '';
 
-            // figure out who the learner is, by student ID
-            const xLearners = recordCollectionToArray(learners).filter(x => x.studentId === r.studentId);
-            if (xLearners.length === 0) {
-                validity = 'learner student ID does not exist';
-            } else if (xLearners.length === 1) {
-                learner = xLearners[0].id;
-            } else {
-                throw new Error(`duplicate learner ID#${String(r.studentId)}`);
-            }
+        // give the tutor their time
+        minutesForTutor = MINUTES_PER_MOD;
+        presenceForTutor = 'P';
 
-            // learners always have tutors --- figure out who the tutor is, by looking through matchings
-            const xMatchings = recordCollectionToArray(matchings).filter(x => x.status === 'finalized' && x.learner === learner && x.mod === mod);
-            if (xMatchings.length === 0) {
-                validity = 'matching does not exist';
-            } else if (xMatchings.length === 1) {
-                tutor = xMatchings[0].tutor;
-            } else {
-                throw new Error(`the learner ${xMatchings[0].friendlyFullName} is matched twice on the same mod`);
-            }
-
-            // see if the tutor showed up
-            if (validity === '') {
-                if (r.presence === 'Yes') {
-                    minutesForTutor = MINUTES_PER_MOD;
-                } else if (r.presence === 'No') {
-                    minutesForTutor = 0;
-                } else if (r.presence === `I'm a tutor and don't have a learner assigned`) {
-                    // but they said that they were a learner! nonsense!
-                    validity = 'incompatible set of form answers';
-                } else {
-                    throw new Error(`invalid presence (${String(r.presence)})`)
-                }
-            }
-        } else if (r.learnerOrTutor === 'Tutor') {
-            // give the tutor their time
-            minutesForTutor = MINUTES_PER_MOD;
-
-            // figure out who the tutor is, by student ID
-            const xTutors = recordCollectionToArray(tutors).filter(x => x.studentId === r.studentId);
-            if (xTutors.length === 0) {
-                validity = 'tutor student ID does not exist';
-            } else if (xTutors.length === 1) {
-                tutor = xTutors[0].id;
-            } else {
-                throw new Error(`duplicate tutor student id ${String(r.studentId)}`);
-            }
-
-            // does the tutor have a learner?
-            const xMatchings = recordCollectionToArray(matchings).filter(x => x.status === 'finalized' && x.tutor === tutor && x.mod === mod);
-            if (xMatchings.length === 0) {
-                learner = -1;
-            } else if (xMatchings.length === 1) {
-                learner = xMatchings[0].learner;
-            } else {
-                throw new Error(`the tutor ${xMatchings[0].friendlyFullName} is matched twice on the same mod`);
-            }
-
-            // see if the learner showed up
-            if (validity === '') {
-                if (r.presence === 'Yes') {
-                    minutesForLearner = MINUTES_PER_MOD;
-                } else if (r.presence === 'No') {
-                    minutesForLearner = 0;
-                } else if (r.presence === `I'm a tutor and don't have a learner assigned`) {
-                    if (learner === -1) {
-                        minutesForLearner = -1;
-                    } else {
-                        // so there really is a learner...
-                        validity = `tutor said they don't have a learner assigned, but they do!`
-                    }
-                } else {
-                    throw new Error(`invalid presence (${String(r.presence)})`)
-                }
-            }
+        // figure out who the tutor is, by student ID
+        const xTutors = recordCollectionToArray(tutors).filter(x => x.studentId === r.studentId);
+        if (xTutors.length === 0) {
+            validity = 'tutor student ID does not exist';
+        } else if (xTutors.length === 1) {
+            tutor = xTutors[0].id;
         } else {
-            throw new Error('process attendance error: learner/tutor naming issue')
+            throw new Error(`duplicate tutor student id ${String(r.studentId)}`);
+        }
+
+        // does the tutor have a learner?
+        const xMatchings = recordCollectionToArray(matchings).filter(x => x.status === 'finalized' && x.tutor === tutor && x.mod === mod);
+        if (xMatchings.length === 0) {
+            learner = -1;
+        } else if (xMatchings.length === 1) {
+            learner = xMatchings[0].learner;
+        } else {
+            throw new Error(`the tutor ${xMatchings[0].friendlyFullName} is matched twice on the same mod`);
+        }
+
+        // ATTENDANCE LOGIC
+        if (validity === '') {
+            if (r.presence === 'Yes') {
+                minutesForLearner = MINUTES_PER_MOD;
+                presenceForLearner = 'P';
+            } else if (r.presence === 'No') {
+                minutesForLearner = 0;
+                presenceForLearner = 'A';
+            } else if (r.presence === `I don't have a learner assigned`) {
+                if (learner === -1) {
+                    minutesForLearner = -1;
+                } else {
+                    // so there really is a learner...
+                    validity = `tutor said they don't have a learner assigned, but they do!`
+                }
+            } else if (r.presence === `No, but the learner doesn't need any tutoring today`) {
+                if (learner === -1) {
+                    validity = `tutor said they have a learner assigned, but they don't!`
+                } else {
+                    minutesForLearner = 1; // TODO: this is a hacky solution; fix it
+                    presenceForLearner = 'E';
+                }
+            } else {
+                throw new Error(`invalid presence (${String(r.presence)})`)
+            }
         }
 
         return {
@@ -1135,7 +1059,9 @@ function onSyncForms() {
             tutor,
             learner,
             minutesForTutor,
-            minutesForLearner
+            minutesForLearner,
+            presenceForTutor,
+            presenceForLearner
         };
     }
 
