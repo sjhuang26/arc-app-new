@@ -732,20 +732,20 @@ function doGet() {
   return HtmlService.createHtmlOutputFromFile('index');
 }
 
-function processClientAsk(args: any[]): ServerResponse<any> {
+function processClientAsk(args: any[]): any {
   const resourceName: string = args[0];
   if (resourceName === undefined) {
     throw new Error('no args, or must specify resource name');
   }
   if (resourceName === 'command') {
     if (args[1] === 'syncDataFromForms') {
-      onSyncForms();
+      return onSyncForms();
     }
     if (args[1] === 'recalculateAttendance') {
-      onRecalculateAttendance();
+      return onRecalculateAttendance();
     }
     if (args[1] === 'generateSchedule') {
-      onGenerateSchedule();
+      return onGenerateSchedule();
     }
     throw new Error('unknown command');
   }
@@ -753,11 +753,7 @@ function processClientAsk(args: any[]): ServerResponse<any> {
     throw new Error(`resource ${String(resourceName)} not found`);
   }
   const resource = tableMap[resourceName]();
-  return {
-    error: false,
-    val: resource.processClientAsk(args.slice(1)),
-    message: null
-  };
+  return resource.processClientAsk(args.slice(1));
 }
 
 // this is the MAIN ENTRYPOINT that the client uses to ask the server for data.
@@ -768,7 +764,11 @@ function onClientAsk(args: any[]): string {
     message: 'Mysterious error'
   };
   try {
-    returnValue = processClientAsk(args);
+    returnValue = {
+      error: false,
+      val: processClientAsk(args),
+      message: null
+    };
   } catch (err) {
     returnValue = {
       error: true,
@@ -912,8 +912,20 @@ function doFormSync(
 
 const MINUTES_PER_MOD = 38;
 
+function uiSyncForms() {
+  try {
+    const result = onSyncForms();
+    SpreadsheetApp.getUi().alert(
+      `Finished sync! ${result as number} new form submits found.`
+    );
+  } catch (err) {
+    Logger.log(stringifyError(err));
+    throw err;
+  }
+}
+
 // The main "sync forms" function that's crammed with form data formatting.
-function onSyncForms() {
+function onSyncForms(): number {
   // tables
   const tutors = tableMap.tutors().retrieveAllRecords();
   const matchings = tableMap.matchings().retrieveAllRecords();
@@ -1138,30 +1150,35 @@ function onSyncForms() {
     };
   }
 
+  let numOfThingsSynced = 0;
+  numOfThingsSynced += doFormSync(
+    tableMap.requestForm(),
+    tableMap.requestSubmissions(),
+    processRequestFormRecord
+  );
+  numOfThingsSynced += doFormSync(
+    tableMap.specialRequestForm(),
+    tableMap.requestSubmissions(),
+    processSpecialRequestFormRecord
+  );
+  numOfThingsSynced += doFormSync(
+    tableMap.attendanceForm(),
+    tableMap.attendanceLog(),
+    processAttendanceFormRecord
+  );
+  numOfThingsSynced += doFormSync(
+    tableMap.tutorRegistrationForm(),
+    tableMap.tutors(),
+    processTutorRegistrationFormRecord
+  );
+  return numOfThingsSynced;
+}
+
+function uiRecalculateAttendance() {
   try {
-    let numOfThingsSynced = 0;
-    numOfThingsSynced += doFormSync(
-      tableMap.requestForm(),
-      tableMap.requestSubmissions(),
-      processRequestFormRecord
-    );
-    numOfThingsSynced += doFormSync(
-      tableMap.specialRequestForm(),
-      tableMap.requestSubmissions(),
-      processSpecialRequestFormRecord
-    );
-    numOfThingsSynced += doFormSync(
-      tableMap.attendanceForm(),
-      tableMap.attendanceLog(),
-      processAttendanceFormRecord
-    );
-    numOfThingsSynced += doFormSync(
-      tableMap.tutorRegistrationForm(),
-      tableMap.tutors(),
-      processTutorRegistrationFormRecord
-    );
+    const numAttendancesChanged = onRecalculateAttendance();
     SpreadsheetApp.getUi().alert(
-      `Finished sync! ${numOfThingsSynced} new form submits found.`
+      `Finished attendance update. ${numAttendancesChanged} attendances were changed.`
     );
   } catch (err) {
     Logger.log(stringifyError(err));
@@ -1171,171 +1188,174 @@ function onSyncForms() {
 
 // This recalculates the attendance.
 function onRecalculateAttendance() {
-  try {
-    let numAttendancesChanged = 0;
+  let numAttendancesChanged = 0;
 
-    // read tables
-    const tutors = tableMap.tutors().retrieveAllRecords();
-    const tutorsArray = Object_values(tutors);
-    const learners = tableMap.learners().retrieveAllRecords();
-    const attendanceLog = tableMap.attendanceLog().retrieveAllRecords();
-    const attendanceDays = tableMap.attendanceDays().retrieveAllRecords();
-    const matchings = tableMap.matchings().retrieveAllRecords();
-    // combine presences
-    for (const x of Object_values(attendanceLog)) {
-      if (x.tutor !== -1) {
-        const y = tutors[String(x.tutor)];
-        if (y.attendance[String(x.dateOfAttendance)] === undefined) {
-          y.attendance[String(x.dateOfAttendance)] = [];
-        }
-        let isNew = true;
-        for (const z of y.attendance[String(x.dateOfAttendance)]) {
-          if (x.mod === z.mod) {
-            isNew = false;
-          }
-        }
-        if (isNew) {
-          y.attendance[String(x.dateOfAttendance)].push({
-            date: x.dateOfAttendance,
-            mod: x.mod,
-            minutes: x.minutesForTutor
-          });
-          ++numAttendancesChanged;
+  // read tables
+  const tutors = tableMap.tutors().retrieveAllRecords();
+  const tutorsArray = Object_values(tutors);
+  const learners = tableMap.learners().retrieveAllRecords();
+  const attendanceLog = tableMap.attendanceLog().retrieveAllRecords();
+  const attendanceDays = tableMap.attendanceDays().retrieveAllRecords();
+  const matchings = tableMap.matchings().retrieveAllRecords();
+  // combine presences
+  for (const x of Object_values(attendanceLog)) {
+    if (x.tutor !== -1) {
+      const y = tutors[String(x.tutor)];
+      if (y.attendance[String(x.dateOfAttendance)] === undefined) {
+        y.attendance[String(x.dateOfAttendance)] = [];
+      }
+      let isNew = true;
+      for (const z of y.attendance[String(x.dateOfAttendance)]) {
+        if (x.mod === z.mod) {
+          isNew = false;
         }
       }
-      if (x.learner !== -1) {
-        const y = learners[String(x.learner)];
-        if (y.attendance[String(x.dateOfAttendance)] === undefined) {
-          y.attendance[String(x.dateOfAttendance)] = [];
-        }
-        let isNew = true;
-        for (const z of y.attendance[String(x.dateOfAttendance)]) {
-          if (x.mod === z.mod) {
-            isNew = false;
-          }
-        }
-        if (isNew) {
-          y.attendance[String(x.dateOfAttendance)].push({
-            date: x.dateOfAttendance,
-            mod: x.mod,
-            minutes: x.minutesForLearner
-          });
-          ++numAttendancesChanged;
-        }
+      if (isNew) {
+        y.attendance[String(x.dateOfAttendance)].push({
+          date: x.dateOfAttendance,
+          mod: x.mod,
+          minutes: x.minutesForTutor
+        });
+        ++numAttendancesChanged;
       }
     }
-    // index whether a tutor should be showing up
-    const tutorShouldBeShowingUp: {
-      [id: string]: { [mod: string]: boolean };
-    } = {};
-    for (const tutor of tutorsArray) {
-      tutorShouldBeShowingUp[String(tutor.id)] = {};
-      // handle drop-ins
-      for (const mod of tutor.dropInMods) {
-        tutorShouldBeShowingUp[String(tutor.id)][mod] = true;
+    if (x.learner !== -1) {
+      const y = learners[String(x.learner)];
+      if (y.attendance[String(x.dateOfAttendance)] === undefined) {
+        y.attendance[String(x.dateOfAttendance)] = [];
       }
-    }
-    for (const matching of Object_values(matchings)) {
-      if (matching.status === 'finalized') {
-        tutorShouldBeShowingUp[String(matching.tutor)][matching.mod] = true;
-      }
-    }
-
-    Logger.log(JSON.stringify(tutorShouldBeShowingUp));
-
-    // mark absences
-    for (const day of Object_values(attendanceDays)) {
-      // round down to the nearest 24-hour day
-      day.dateOfAttendance = roundDownToDay(day.dateOfAttendance);
-
-      if (
-        day.status === 'upcoming' ||
-        day.status === 'finalized' ||
-        day.status === 'reset'
-      ) {
-        // ignore
-      } else if (day.status === 'unfinalized' || day.status === 'unreset') {
-        let isBDay: boolean = null;
-        if (day.abDay.toLowerCase().charAt(0) === 'a') {
-          isBDay = false;
-        } else if (day.abDay.toLowerCase().charAt(0) === 'b') {
-          isBDay = true;
-        } else {
-          throw new Error('unrecognized attendance day letter');
+      let isNew = true;
+      for (const z of y.attendance[String(x.dateOfAttendance)]) {
+        if (x.mod === z.mod) {
+          isNew = false;
         }
-        for (const tutor of tutorsArray) {
-          Logger.log(JSON.stringify(tutor));
-          for (const mod of tutor.mods) {
-            if (isBDay ? 10 < mod : mod <= 10) {
-              if (
-                tutorShouldBeShowingUp[String(tutor.id)][String(mod)] === true
-              ) {
-                // mark tutor as (un-?)absent at a specific date and mod
-                if (day.status === 'unreset') {
-                  if (tutor.attendance[day.dateOfAttendance] !== undefined) {
-                    tutor.attendance[day.dateOfAttendance] = tutor.attendance[
-                      day.dateOfAttendance
-                    ].filter((x: any) => {
-                      if (x.mod === mod && x.minutes === 0) {
-                        ++numAttendancesChanged;
-                        return false;
-                      } else {
-                        return true;
-                      }
-                    });
-                  }
+      }
+      if (isNew) {
+        y.attendance[String(x.dateOfAttendance)].push({
+          date: x.dateOfAttendance,
+          mod: x.mod,
+          minutes: x.minutesForLearner
+        });
+        ++numAttendancesChanged;
+      }
+    }
+  }
+  // index whether a tutor should be showing up
+  const tutorShouldBeShowingUp: {
+    [id: string]: { [mod: string]: boolean };
+  } = {};
+  for (const tutor of tutorsArray) {
+    tutorShouldBeShowingUp[String(tutor.id)] = {};
+    // handle drop-ins
+    for (const mod of tutor.dropInMods) {
+      tutorShouldBeShowingUp[String(tutor.id)][mod] = true;
+    }
+  }
+  for (const matching of Object_values(matchings)) {
+    if (matching.status === 'finalized') {
+      tutorShouldBeShowingUp[String(matching.tutor)][matching.mod] = true;
+    }
+  }
+
+  Logger.log(JSON.stringify(tutorShouldBeShowingUp));
+
+  // mark absences
+  for (const day of Object_values(attendanceDays)) {
+    // round down to the nearest 24-hour day
+    day.dateOfAttendance = roundDownToDay(day.dateOfAttendance);
+
+    if (
+      day.status === 'upcoming' ||
+      day.status === 'finalized' ||
+      day.status === 'reset'
+    ) {
+      // ignore
+    } else if (day.status === 'unfinalized' || day.status === 'unreset') {
+      let isBDay: boolean = null;
+      if (day.abDay.toLowerCase().charAt(0) === 'a') {
+        isBDay = false;
+      } else if (day.abDay.toLowerCase().charAt(0) === 'b') {
+        isBDay = true;
+      } else {
+        throw new Error('unrecognized attendance day letter');
+      }
+      for (const tutor of tutorsArray) {
+        Logger.log(JSON.stringify(tutor));
+        for (const mod of tutor.mods) {
+          if (isBDay ? 10 < mod : mod <= 10) {
+            if (
+              tutorShouldBeShowingUp[String(tutor.id)][String(mod)] === true
+            ) {
+              // mark tutor as (un-?)absent at a specific date and mod
+              if (day.status === 'unreset') {
+                if (tutor.attendance[day.dateOfAttendance] !== undefined) {
+                  tutor.attendance[day.dateOfAttendance] = tutor.attendance[
+                    day.dateOfAttendance
+                  ].filter((x: any) => {
+                    if (x.mod === mod && x.minutes === 0) {
+                      ++numAttendancesChanged;
+                      return false;
+                    } else {
+                      return true;
+                    }
+                  });
                 }
-                if (day.status === 'unfinalized') {
-                  let alreadyExists = false; // if a presence or absence exists, don't add an absence
-                  if (tutor.attendance[day.dateOfAttendance] === undefined) {
-                    tutor.attendance[day.dateOfAttendance] = [];
-                  } else {
-                    for (const x of tutor.attendance[day.dateOfAttendance]) {
-                      if (x.mod === mod) {
-                        alreadyExists = true;
-                      }
+              }
+              if (day.status === 'unfinalized') {
+                let alreadyExists = false; // if a presence or absence exists, don't add an absence
+                if (tutor.attendance[day.dateOfAttendance] === undefined) {
+                  tutor.attendance[day.dateOfAttendance] = [];
+                } else {
+                  for (const x of tutor.attendance[day.dateOfAttendance]) {
+                    if (x.mod === mod) {
+                      alreadyExists = true;
                     }
                   }
-                  if (!alreadyExists) {
-                    // add an absence!
-                    tutor.attendance[day.dateOfAttendance].push({
-                      date: day.dateOfAttendance,
-                      mod,
-                      minutes: 0
-                    });
-                    ++numAttendancesChanged;
-                  }
+                }
+                if (!alreadyExists) {
+                  // add an absence!
+                  tutor.attendance[day.dateOfAttendance].push({
+                    date: day.dateOfAttendance,
+                    mod,
+                    minutes: 0
+                  });
+                  ++numAttendancesChanged;
                 }
               }
             }
           }
-          if (
-            tutor.attendance[day.dateOfAttendance] !== undefined &&
-            tutor.attendance[day.dateOfAttendance].length === 0
-          ) {
-            delete tutor.attendance[day.dateOfAttendance];
-          }
         }
-
-        // change day status
-        if (day.status === 'unreset') {
-          day.status = 'reset';
+        if (
+          tutor.attendance[day.dateOfAttendance] !== undefined &&
+          tutor.attendance[day.dateOfAttendance].length === 0
+        ) {
+          delete tutor.attendance[day.dateOfAttendance];
         }
-        if (day.status === 'unfinalized') {
-          day.status = 'finalized';
-        }
-        tableMap.attendanceDays().updateRecord(day);
-      } else {
-        throw new Error('unknown day status');
       }
+
+      // change day status
+      if (day.status === 'unreset') {
+        day.status = 'reset';
+      }
+      if (day.status === 'unfinalized') {
+        day.status = 'finalized';
+      }
+      tableMap.attendanceDays().updateRecord(day);
+    } else {
+      throw new Error('unknown day status');
     }
+  }
 
-    // update table
-    tableMap.tutors().updateAllRecords(tutorsArray);
+  // update table
+  tableMap.tutors().updateAllRecords(tutorsArray);
 
-    SpreadsheetApp.getUi().alert(
-      `Finished attendance update. ${numAttendancesChanged} attendances were changed.`
-    );
+  return numAttendancesChanged;
+}
+
+function uiGenerateSchedule() {
+  try {
+    onGenerateSchedule();
+    SpreadsheetApp.getUi().alert('Success');
   } catch (err) {
     Logger.log(stringifyError(err));
     throw err;
@@ -1359,204 +1379,200 @@ function onGenerateSchedule() {
     return 0;
   };
 
-  try {
-    // Delete & insert sheet
-    let ss = SpreadsheetApp.getActive();
-    let sheet = ss.getSheetByName('schedule');
-    if (sheet !== null) {
-      ss.deleteSheet(sheet);
-    }
-    sheet = ss.insertSheet('schedule', 0);
+  // Delete & insert sheet
+  let ss = SpreadsheetApp.getActive();
+  let sheet = ss.getSheetByName('schedule');
+  if (sheet !== null) {
+    ss.deleteSheet(sheet);
+  }
+  sheet = ss.insertSheet('schedule', 0);
 
-    // Get all matchings, tutors, and learners
-    const matchings = tableMap.matchings().retrieveAllRecords();
-    const tutors = tableMap.tutors().retrieveAllRecords();
-    const learners = tableMap.learners().retrieveAllRecords();
+  // Get all matchings, tutors, and learners
+  const matchings = tableMap.matchings().retrieveAllRecords();
+  const tutors = tableMap.tutors().retrieveAllRecords();
+  const learners = tableMap.learners().retrieveAllRecords();
 
-    // Header
-    sheet.appendRow(['ARC SCHEDULE']);
-    sheet.appendRow([`Automatically generated on ${new Date()}`]);
+  // Header
+  sheet.appendRow(['ARC SCHEDULE']);
+  sheet.appendRow([`Automatically generated on ${new Date()}`]);
 
-    // Create a list of [ mod, tutorName, info about matching, as string ]
-    const scheduleInfo: ScheduleEntry[] = []; // mod = -1 means that the tutor has no one
+  // Create a list of [ mod, tutorName, info about matching, as string ]
+  const scheduleInfo: ScheduleEntry[] = []; // mod = -1 means that the tutor has no one
 
-    // Figure out all matchings that are finalized, indexed by tutor
-    const index: {
-      [tutorId: string]: { isMatched: boolean; hasBeenScheduled: boolean };
-    } = {};
+  // Figure out all matchings that are finalized, indexed by tutor
+  const index: {
+    [tutorId: string]: { isMatched: boolean; hasBeenScheduled: boolean };
+  } = {};
 
-    // create a bunch of blanks in the index
-    for (const x of Object_values(tutors)) {
-      index[String(x.id)] = {
-        isMatched: false,
-        hasBeenScheduled: false
-      };
-    }
+  // create a bunch of blanks in the index
+  for (const x of Object_values(tutors)) {
+    index[String(x.id)] = {
+      isMatched: false,
+      hasBeenScheduled: false
+    };
+  }
 
-    // fill in index with matchings
-    for (const x of Object_values(matchings)) {
-      const name = learners[x.learner].friendlyFullName;
-      index[x.tutor].isMatched = true;
-      index[x.tutor].hasBeenScheduled = true;
+  // fill in index with matchings
+  for (const x of Object_values(matchings)) {
+    const name = learners[x.learner].friendlyFullName;
+    index[x.tutor].isMatched = true;
+    index[x.tutor].hasBeenScheduled = true;
+    scheduleInfo.push({
+      isDropIn: false,
+      mod: x.mod,
+      tutorName: tutors[x.tutor].friendlyFullName,
+      info:
+        x.specialRoom === '' || x.specialRoom === undefined
+          ? `(w/${name})`
+          : `(w/${name} SPECIAL @room ${x.specialRoom})`
+    });
+  }
+
+  const unscheduledTutorNames: string[] = [];
+
+  // fill in index with drop-ins
+  for (const x of Object_values(tutors)) {
+    for (const mod of x.dropInMods) {
+      index[String(x.id)].hasBeenScheduled = true;
       scheduleInfo.push({
-        isDropIn: false,
-        mod: x.mod,
-        tutorName: tutors[x.tutor].friendlyFullName,
-        info:
-          x.specialRoom === '' || x.specialRoom === undefined
-            ? `(w/${name})`
-            : `(w/${name} SPECIAL @room ${x.specialRoom})`
+        isDropIn: true,
+        mod,
+        tutorName: x.friendlyFullName,
+        info: '(drop in)'
       });
     }
-
-    const unscheduledTutorNames: string[] = [];
-
-    // fill in index with drop-ins
-    for (const x of Object_values(tutors)) {
-      for (const mod of x.dropInMods) {
-        index[String(x.id)].hasBeenScheduled = true;
-        scheduleInfo.push({
-          isDropIn: true,
-          mod,
-          tutorName: x.friendlyFullName,
-          info: '(drop in)'
-        });
-      }
-      if (
-        !index[String(x.id)].hasBeenScheduled &&
-        !index[String(x.id)].isMatched
-      ) {
-        unscheduledTutorNames.push(x.friendlyFullName);
-      }
+    if (
+      !index[String(x.id)].hasBeenScheduled &&
+      !index[String(x.id)].isMatched
+    ) {
+      unscheduledTutorNames.push(x.friendlyFullName);
     }
-
-    // Print!
-    // CHANGE COLUMNS
-    sheet.deleteColumns(5, sheet.getMaxColumns() - 5);
-    sheet.setColumnWidth(1, 30);
-    sheet.setColumnWidth(2, 300);
-    sheet.setColumnWidth(3, 30);
-    sheet.setColumnWidth(4, 300);
-    sheet.setColumnWidth(5, 30);
-
-    // HEADER
-    sheet.getRange(1, 1, 3, 5).mergeAcross();
-    sheet
-      .getRange(1, 1)
-      .setValue('ARC Schedule')
-      .setFontSize(36)
-      .setHorizontalAlignment('center');
-    sheet
-      .getRange(2, 1)
-      .setValue('Automatically generated on ' + new Date().toISOString())
-      .setFontSize(14)
-      .setHorizontalAlignment('center');
-    sheet.setRowHeight(3, 30);
-    sheet
-      .getRange(4, 2)
-      .setValue('A Days')
-      .setFontSize(18)
-      .setHorizontalAlignment('center');
-    sheet
-      .getRange(4, 4)
-      .setValue('B Days')
-      .setFontSize(18)
-      .setHorizontalAlignment('center');
-    sheet.setRowHeight(5, 30);
-
-    const layoutMatrix: [ScheduleEntry[], ScheduleEntry[]][] = []; // [mod0to9][abday]
-    for (let i = 0; i < 10; ++i) {
-      layoutMatrix.push([
-        scheduleInfo.filter(x => x.mod === i + 1).sort(sortComparator), // A days
-        scheduleInfo.filter(x => x.mod === i + 11).sort(sortComparator) // B days
-      ]);
-    }
-
-    // LAYOUT
-    let nextRow = 6;
-    for (let i = 0; i < 10; ++i) {
-      const scheduleRowSize = Math.max(
-        layoutMatrix[i][0].length,
-        layoutMatrix[i][1].length
-      );
-      // LABEL
-      sheet.getRange(nextRow, 1, scheduleRowSize).merge();
-      sheet
-        .getRange(nextRow, 1)
-        .setValue(`${i + 1}`)
-        .setFontSize(18)
-        .setVerticalAlignment('top');
-
-      // CONTENT
-      sheet
-        .getRange(nextRow, 2, layoutMatrix[i][0].length)
-        .setValues(layoutMatrix[i][0].map(x => [`${x.tutorName} ${x.info}`]))
-        .setWrap(true)
-        .setFontColors(
-          layoutMatrix[i][0].map(x => [x.isDropIn ? 'black' : 'red'])
-        );
-      sheet
-        .getRange(nextRow, 4, layoutMatrix[i][1].length)
-        .setValues(layoutMatrix[i][1].map(x => [`${x.tutorName} ${x.info}`]))
-        .setWrap(true)
-        .setFontColors(
-          layoutMatrix[i][1].map(x => [x.isDropIn ? 'black' : 'red'])
-        );
-
-      // SET THE NEXT ROW
-      nextRow += scheduleRowSize;
-
-      // GUTTER
-      sheet.getRange(nextRow, 1, 1, 5).merge();
-      sheet.setRowHeight(nextRow, 60);
-      ++nextRow;
-    }
-
-    // UNSCHEDULED TUTORS
-    sheet
-      .getRange(nextRow, 2, 1, 3)
-      .merge()
-      .setValue(`Unscheduled tutors`)
-      .setFontSize(18)
-      .setFontStyle('italic')
-      .setHorizontalAlignment('center')
-      .setWrap(true);
-    ++nextRow;
-    sheet
-      .getRange(nextRow, 2, unscheduledTutorNames.length, 3)
-      .mergeAcross()
-      .setHorizontalAlignment('center');
-    sheet
-      .getRange(nextRow, 2, unscheduledTutorNames.length)
-      .setValues(unscheduledTutorNames.map(x => [x + ' (unscheduled)']));
-    nextRow += unscheduledTutorNames.length;
-
-    // FOOTER
-    sheet
-      .getRange(nextRow, 2, 1, 4)
-      .merge()
-      .setValue(`That's all!`)
-      .setFontSize(18)
-      .setFontStyle('italic')
-      .setHorizontalAlignment('center');
-    ++nextRow;
-
-    // FIT ROWS/COLUMNS
-    sheet.deleteRows(
-      sheet.getLastRow() + 1,
-      sheet.getMaxRows() - sheet.getLastRow()
-    );
-  } catch (err) {
-    Logger.log(stringifyError(err));
-    throw err;
   }
+
+  // Print!
+  // CHANGE COLUMNS
+  sheet.deleteColumns(5, sheet.getMaxColumns() - 5);
+  sheet.setColumnWidth(1, 30);
+  sheet.setColumnWidth(2, 300);
+  sheet.setColumnWidth(3, 30);
+  sheet.setColumnWidth(4, 300);
+  sheet.setColumnWidth(5, 30);
+
+  // HEADER
+  sheet.getRange(1, 1, 3, 5).mergeAcross();
+  sheet
+    .getRange(1, 1)
+    .setValue('ARC Schedule')
+    .setFontSize(36)
+    .setHorizontalAlignment('center');
+  sheet
+    .getRange(2, 1)
+    .setValue('Automatically generated on ' + new Date().toISOString())
+    .setFontSize(14)
+    .setHorizontalAlignment('center');
+  sheet.setRowHeight(3, 30);
+  sheet
+    .getRange(4, 2)
+    .setValue('A Days')
+    .setFontSize(18)
+    .setHorizontalAlignment('center');
+  sheet
+    .getRange(4, 4)
+    .setValue('B Days')
+    .setFontSize(18)
+    .setHorizontalAlignment('center');
+  sheet.setRowHeight(5, 30);
+
+  const layoutMatrix: [ScheduleEntry[], ScheduleEntry[]][] = []; // [mod0to9][abday]
+  for (let i = 0; i < 10; ++i) {
+    layoutMatrix.push([
+      scheduleInfo.filter(x => x.mod === i + 1).sort(sortComparator), // A days
+      scheduleInfo.filter(x => x.mod === i + 11).sort(sortComparator) // B days
+    ]);
+  }
+
+  // LAYOUT
+  let nextRow = 6;
+  for (let i = 0; i < 10; ++i) {
+    const scheduleRowSize = Math.max(
+      layoutMatrix[i][0].length,
+      layoutMatrix[i][1].length
+    );
+    // LABEL
+    sheet.getRange(nextRow, 1, scheduleRowSize).merge();
+    sheet
+      .getRange(nextRow, 1)
+      .setValue(`${i + 1}`)
+      .setFontSize(18)
+      .setVerticalAlignment('top');
+
+    // CONTENT
+    sheet
+      .getRange(nextRow, 2, layoutMatrix[i][0].length)
+      .setValues(layoutMatrix[i][0].map(x => [`${x.tutorName} ${x.info}`]))
+      .setWrap(true)
+      .setFontColors(
+        layoutMatrix[i][0].map(x => [x.isDropIn ? 'black' : 'red'])
+      );
+    sheet
+      .getRange(nextRow, 4, layoutMatrix[i][1].length)
+      .setValues(layoutMatrix[i][1].map(x => [`${x.tutorName} ${x.info}`]))
+      .setWrap(true)
+      .setFontColors(
+        layoutMatrix[i][1].map(x => [x.isDropIn ? 'black' : 'red'])
+      );
+
+    // SET THE NEXT ROW
+    nextRow += scheduleRowSize;
+
+    // GUTTER
+    sheet.getRange(nextRow, 1, 1, 5).merge();
+    sheet.setRowHeight(nextRow, 60);
+    ++nextRow;
+  }
+
+  // UNSCHEDULED TUTORS
+  sheet
+    .getRange(nextRow, 2, 1, 3)
+    .merge()
+    .setValue(`Unscheduled tutors`)
+    .setFontSize(18)
+    .setFontStyle('italic')
+    .setHorizontalAlignment('center')
+    .setWrap(true);
+  ++nextRow;
+  sheet
+    .getRange(nextRow, 2, unscheduledTutorNames.length, 3)
+    .mergeAcross()
+    .setHorizontalAlignment('center');
+  sheet
+    .getRange(nextRow, 2, unscheduledTutorNames.length)
+    .setValues(unscheduledTutorNames.map(x => [x + ' (unscheduled)']));
+  nextRow += unscheduledTutorNames.length;
+
+  // FOOTER
+  sheet
+    .getRange(nextRow, 2, 1, 4)
+    .merge()
+    .setValue(`That's all!`)
+    .setFontSize(18)
+    .setFontStyle('italic')
+    .setHorizontalAlignment('center');
+  ++nextRow;
+
+  // FIT ROWS/COLUMNS
+  sheet.deleteRows(
+    sheet.getLastRow() + 1,
+    sheet.getMaxRows() - sheet.getLastRow()
+  );
+  return null;
 }
 
 function onOpen(_ev: any) {
   const menu = SpreadsheetApp.getUi().createMenu('ARC APP');
-  menu.addItem('Sync data from forms', 'onSyncForms');
-  menu.addItem('Generate schedule', 'onGenerateSchedule');
-  menu.addItem('Recalculate attendance', 'onRecalculateAttendance');
+  menu.addItem('Sync data from forms', 'uiSyncForms');
+  menu.addItem('Generate schedule', 'uiGenerateSchedule');
+  menu.addItem('Recalculate attendance', 'uiRecalculateAttendance');
   if (ARC_APP_DEBUG_MODE) {
     menu.addItem('Debug: test client API', 'debugClientApiTest');
     menu.addItem('Debug: reset all tables', 'debugResetEverything');
