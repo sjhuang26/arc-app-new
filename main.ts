@@ -1092,7 +1092,7 @@ function onSyncForms(): number {
 
     // does the tutor have a learner?
     const xMatchings = recordCollectionToArray(matchings).filter(
-      x => x.status === 'finalized' && x.tutor === tutor && x.mod === mod
+      x => x.tutor === tutor && x.mod === mod
     );
     if (xMatchings.length === 0) {
       learner = -1;
@@ -1189,165 +1189,203 @@ function uiRecalculateAttendance() {
 // This recalculates the attendance.
 function onRecalculateAttendance() {
   let numAttendancesChanged = 0;
+  function calculateIsBDay(x: string) {
+    if (x.toLowerCase().charAt(0) === 'a') {
+      return false;
+    } else if (x.toLowerCase().charAt(0) === 'b') {
+      return true;
+    } else {
+      throw new Error('unrecognized attendance day letter');
+    }
+  }
+
+  function whenTutorFormNotFilledOutLogic(
+    tutorId: number,
+    learnerId: number,
+    mod: number,
+    day: Rec
+  ) {
+    const tutor = tutors[tutorId];
+    const date = day.dateOfAttendance;
+    // mark tutor as (un-?)absent at a specific date and mod
+    if (day.status === 'doreset') {
+      if (tutor.attendance[date] !== undefined) {
+        // filter out some absences (excused absences are actually counted as a 1-minute presence)
+        tutor.attendance[date] = tutor.attendance[date].filter((x: any) => {
+          if (x.mod === mod && x.minutes === 0) {
+            ++numAttendancesChanged;
+            return false;
+          } else {
+            return true;
+          }
+        });
+      }
+    }
+    if (day.status === 'doit') {
+      let alreadyExists = false; // if a presence or absence exists, don't add an absence
+      if (tutor.attendance[date] === undefined) {
+        tutor.attendance[date] = [];
+      } else {
+        for (const x of tutor.attendance[date]) {
+          if (x.mod === mod) {
+            alreadyExists = true;
+          }
+        }
+      }
+      if (!alreadyExists) {
+        // add an absence for the tutor
+        tutor.attendance[date].push({
+          date,
+          mod,
+          minutes: 0
+        });
+        // add an excused absence for the learner, if exists
+        if (learnerId !== -1) {
+          learners[learnerId].attendance[date].push({
+            date,
+            mod,
+            minutes: 1
+          });
+        }
+        numAttendancesChanged += 2;
+      }
+    }
+  }
+
+  function applyAttendanceForStudent(
+    attendance: any,
+    entry: Rec,
+    minutes: number
+  ) {
+    if (attendance[entry.dateOfAttendance] === undefined) {
+      attendance[entry.dateOfAttendance] = [];
+    }
+    let isNew = true;
+    for (const i of attendance[entry.dateOfAttendance]) {
+      if (entry.mod === i.mod) {
+        isNew = false;
+      }
+    }
+    if (isNew) {
+      attendance[entry.dateOfAttendance].push({
+        date: entry.dateOfAttendance,
+        mod: entry.mod,
+        minutes
+      });
+      ++numAttendancesChanged;
+    }
+  }
 
   // read tables
   const tutors = tableMap.tutors().retrieveAllRecords();
-  const tutorsArray = Object_values(tutors);
   const learners = tableMap.learners().retrieveAllRecords();
   const attendanceLog = tableMap.attendanceLog().retrieveAllRecords();
   const attendanceDays = tableMap.attendanceDays().retrieveAllRecords();
   const matchings = tableMap.matchings().retrieveAllRecords();
-  // combine presences
-  for (const x of Object_values(attendanceLog)) {
-    if (x.tutor !== -1) {
-      const y = tutors[String(x.tutor)];
-      if (y.attendance[String(x.dateOfAttendance)] === undefined) {
-        y.attendance[String(x.dateOfAttendance)] = [];
-      }
-      let isNew = true;
-      for (const z of y.attendance[String(x.dateOfAttendance)]) {
-        if (x.mod === z.mod) {
-          isNew = false;
-        }
-      }
-      if (isNew) {
-        y.attendance[String(x.dateOfAttendance)].push({
-          date: x.dateOfAttendance,
-          mod: x.mod,
-          minutes: x.minutesForTutor
-        });
-        ++numAttendancesChanged;
-      }
+  const tutorsArray = Object_values(tutors);
+  const learnersArray = Object_values(learners);
+  const matchingsArray = Object_values(matchings);
+  const attendanceLogArray = Object_values(attendanceLog);
+
+  // PROCESS EACH ATTENDANCE LOG ENTRY
+  for (const entry of attendanceLogArray) {
+    if (entry.tutor !== -1) {
+      applyAttendanceForStudent(
+        tutors[entry.tutor].attendance,
+        entry,
+        entry.minutesForTutor
+      );
     }
-    if (x.learner !== -1) {
-      const y = learners[String(x.learner)];
-      if (y.attendance[String(x.dateOfAttendance)] === undefined) {
-        y.attendance[String(x.dateOfAttendance)] = [];
-      }
-      let isNew = true;
-      for (const z of y.attendance[String(x.dateOfAttendance)]) {
-        if (x.mod === z.mod) {
-          isNew = false;
-        }
-      }
-      if (isNew) {
-        y.attendance[String(x.dateOfAttendance)].push({
-          date: x.dateOfAttendance,
-          mod: x.mod,
-          minutes: x.minutesForLearner
-        });
-        ++numAttendancesChanged;
-      }
+    if (entry.learner !== -1) {
+      applyAttendanceForStudent(
+        learners[entry.learner].attendance,
+        entry,
+        entry.minutesForLearner
+      );
     }
   }
-  // index whether a tutor should be showing up
-  const tutorShouldBeShowingUp: {
-    [id: string]: { [mod: string]: boolean };
-  } = {};
+
+  // INDEX TUTORS: FIGURE OUT WHICH TUTORS/MODS HAVE UNSUBMITTED FORMS
+  // For each tutor, keep track of which mods they need to fill out forms.
+  // Figure out which tutors HAVEN'T filled out their forms.
+  // Also keep track of learner ID associated with each mod (-1 for null).
+  type TutorAttendanceFormIndexEntry = {
+    id: number;
+    mod: { [mod: number]: { wasFormSubmitted: boolean; learnerId: number } };
+  };
+  type TutorAttendanceFormIndex = {
+    [id: number]: TutorAttendanceFormIndexEntry;
+  };
+  const tutorAttendanceFormIndex: TutorAttendanceFormIndex = {};
   for (const tutor of tutorsArray) {
-    tutorShouldBeShowingUp[String(tutor.id)] = {};
+    tutorAttendanceFormIndex[tutor.id] = {
+      id: tutor.id,
+      mod: {}
+    };
     // handle drop-ins
     for (const mod of tutor.dropInMods) {
-      tutorShouldBeShowingUp[String(tutor.id)][mod] = true;
+      tutorAttendanceFormIndex[tutor.id].mod[mod] = {
+        wasFormSubmitted: false,
+        learnerId: -1
+      };
     }
   }
-  for (const matching of Object_values(matchings)) {
-    if (matching.status === 'finalized') {
-      tutorShouldBeShowingUp[String(matching.tutor)][matching.mod] = true;
-    }
+  for (const matching of matchingsArray) {
+    tutorAttendanceFormIndex[matching.tutor].mod[matching.mod] = {
+      wasFormSubmitted: false,
+      learnerId: matching.learner
+    };
   }
 
-  Logger.log(JSON.stringify(tutorShouldBeShowingUp));
-
-  // mark absences
+  // DEAL WITH THE UNSUBMITTED FORMS
   for (const day of Object_values(attendanceDays)) {
-    // round down to the nearest 24-hour day
-    day.dateOfAttendance = roundDownToDay(day.dateOfAttendance);
-
     if (
-      day.status === 'upcoming' ||
-      day.status === 'finalized' ||
-      day.status === 'reset'
+      day.status === 'ignore' ||
+      day.status === 'isdone' ||
+      day.status === 'isreset'
     ) {
-      // ignore
-    } else if (day.status === 'unfinalized' || day.status === 'unreset') {
-      let isBDay: boolean = null;
-      if (day.abDay.toLowerCase().charAt(0) === 'a') {
-        isBDay = false;
-      } else if (day.abDay.toLowerCase().charAt(0) === 'b') {
-        isBDay = true;
-      } else {
-        throw new Error('unrecognized attendance day letter');
-      }
-      for (const tutor of tutorsArray) {
-        Logger.log(JSON.stringify(tutor));
-        for (const mod of tutor.mods) {
-          if (isBDay ? 10 < mod : mod <= 10) {
-            if (
-              tutorShouldBeShowingUp[String(tutor.id)][String(mod)] === true
-            ) {
-              // mark tutor as (un-?)absent at a specific date and mod
-              if (day.status === 'unreset') {
-                if (tutor.attendance[day.dateOfAttendance] !== undefined) {
-                  tutor.attendance[day.dateOfAttendance] = tutor.attendance[
-                    day.dateOfAttendance
-                  ].filter((x: any) => {
-                    if (x.mod === mod && x.minutes === 0) {
-                      ++numAttendancesChanged;
-                      return false;
-                    } else {
-                      return true;
-                    }
-                  });
-                }
-              }
-              if (day.status === 'unfinalized') {
-                let alreadyExists = false; // if a presence or absence exists, don't add an absence
-                if (tutor.attendance[day.dateOfAttendance] === undefined) {
-                  tutor.attendance[day.dateOfAttendance] = [];
-                } else {
-                  for (const x of tutor.attendance[day.dateOfAttendance]) {
-                    if (x.mod === mod) {
-                      alreadyExists = true;
-                    }
-                  }
-                }
-                if (!alreadyExists) {
-                  // add an absence!
-                  tutor.attendance[day.dateOfAttendance].push({
-                    date: day.dateOfAttendance,
-                    mod,
-                    minutes: 0
-                  });
-                  ++numAttendancesChanged;
-                }
-              }
-            }
-          }
-        }
-        if (
-          tutor.attendance[day.dateOfAttendance] !== undefined &&
-          tutor.attendance[day.dateOfAttendance].length === 0
-        ) {
-          delete tutor.attendance[day.dateOfAttendance];
-        }
-      }
-
-      // change day status
-      if (day.status === 'unreset') {
-        day.status = 'reset';
-      }
-      if (day.status === 'unfinalized') {
-        day.status = 'finalized';
-      }
-      tableMap.attendanceDays().updateRecord(day);
-    } else {
+      continue;
+    }
+    if (day.status !== 'doit' && day.status !== 'doreset') {
       throw new Error('unknown day status');
     }
+
+    // modify dateOfAttendance; round down to the nearest 24-hour day
+    day.dateOfAttendance = roundDownToDay(day.dateOfAttendance);
+
+    const isBDay: boolean = calculateIsBDay(day.abDay);
+
+    // iterate through all tutors & hunt down the ones that didn't fill out the form
+    for (const tutor of tutorsArray) {
+      for (let i = isBDay ? 10 : 0; i < (isBDay ? 20 : 10); ++i) {
+        const x = tutorAttendanceFormIndex[tutor.id].mod[i];
+        if (x !== undefined && !x.wasFormSubmitted) {
+          whenTutorFormNotFilledOutLogic(tutor.id, x.learnerId, i, day);
+        }
+      }
+      if (
+        tutor.attendance[day.dateOfAttendance] !== undefined &&
+        tutor.attendance[day.dateOfAttendance].length === 0
+      ) {
+        delete tutor.attendance[day.dateOfAttendance];
+      }
+    }
+
+    // change day status
+    if (day.status === 'doreset') {
+      day.status = 'isreset';
+    }
+    if (day.status === 'doit') {
+      day.status = 'isdone';
+    }
+
+    // update record
+    tableMap.attendanceDays().updateRecord(day);
   }
 
-  // update table
+  // THAT'S ALL! UPDATE TABLES
   tableMap.tutors().updateAllRecords(tutorsArray);
+  tableMap.learners().updateAllRecords(learnersArray);
 
   return numAttendancesChanged;
 }
