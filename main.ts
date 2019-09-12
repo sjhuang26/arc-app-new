@@ -1,7 +1,3 @@
-/**
- * @OnlyCurrentDoc
- */
-
 /*
 
 GLOBAL SETTINGS
@@ -227,7 +223,8 @@ class Table {
       new StringField('phone'),
       new StringField('contactPref'),
       new StringField('homeroom'),
-      new StringField('homeroomTeacher')
+      new StringField('homeroomTeacher'),
+      new StringField('attendanceAnnotation')
     ];
   }
 
@@ -244,7 +241,6 @@ class Table {
         new JsonField('attendance'),
         new JsonField('dropInMods'),
         new StringField('afterSchoolAvailability'),
-        new StringField('attendanceAnnotation'),
         new NumberField('additionalHours')
       ]
     },
@@ -986,7 +982,8 @@ function onSyncForms(): number {
       phone: r.phone,
       contactPref: parseContactPref(r.contactPref),
       homeroom: r.homeroom,
-      homeroomTeacher: r.homeroomTeacher
+      homeroomTeacher: r.homeroomTeacher,
+      attendanceAnnotation: ''
     };
   }
 
@@ -1061,6 +1058,7 @@ function onSyncForms(): number {
       ...parseStudentConfig(r),
       homeroom: '[writing pass is unnecessary]',
       homeroomTeacher: '[writing pass is unnecessary]',
+      attendanceAnnotation: '',
       status: 'unchecked'
     };
   }
@@ -1418,7 +1416,9 @@ function onGenerateSchedule() {
   };
 
   // Delete & insert sheet
-  let ss = SpreadsheetApp.getActive();
+  let ss = SpreadsheetApp.openById(
+    '1VbrZTMXGju_pwSrY7-M0l8citrYTm5rIv7RPuKN9deY'
+  );
   let sheet = ss.getSheetByName('schedule');
   if (sheet !== null) {
     ss.deleteSheet(sheet);
@@ -1534,7 +1534,8 @@ function onGenerateSchedule() {
   for (let i = 0; i < 10; ++i) {
     const scheduleRowSize = Math.max(
       layoutMatrix[i][0].length,
-      layoutMatrix[i][1].length
+      layoutMatrix[i][1].length,
+      1
     );
     // LABEL
     sheet.getRange(nextRow, 1, scheduleRowSize).merge();
@@ -1545,20 +1546,24 @@ function onGenerateSchedule() {
       .setVerticalAlignment('top');
 
     // CONTENT
-    sheet
-      .getRange(nextRow, 2, layoutMatrix[i][0].length)
-      .setValues(layoutMatrix[i][0].map(x => [`${x.tutorName} ${x.info}`]))
-      .setWrap(true)
-      .setFontColors(
-        layoutMatrix[i][0].map(x => [x.isDropIn ? 'black' : 'red'])
-      );
-    sheet
-      .getRange(nextRow, 4, layoutMatrix[i][1].length)
-      .setValues(layoutMatrix[i][1].map(x => [`${x.tutorName} ${x.info}`]))
-      .setWrap(true)
-      .setFontColors(
-        layoutMatrix[i][1].map(x => [x.isDropIn ? 'black' : 'red'])
-      );
+    if (layoutMatrix[i][0].length > 0) {
+      sheet
+        .getRange(nextRow, 2, layoutMatrix[i][0].length)
+        .setValues(layoutMatrix[i][0].map(x => [`${x.tutorName} ${x.info}`]))
+        .setWrap(true)
+        .setFontColors(
+          layoutMatrix[i][0].map(x => [x.isDropIn ? 'black' : 'red'])
+        );
+    }
+    if (layoutMatrix[i][1].length > 0) {
+      sheet
+        .getRange(nextRow, 4, layoutMatrix[i][1].length)
+        .setValues(layoutMatrix[i][1].map(x => [`${x.tutorName} ${x.info}`]))
+        .setWrap(true)
+        .setFontColors(
+          layoutMatrix[i][1].map(x => [x.isDropIn ? 'black' : 'red'])
+        );
+    }
 
     // SET THE NEXT ROW
     nextRow += scheduleRowSize;
