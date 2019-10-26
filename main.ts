@@ -122,10 +122,10 @@ class BooleanField extends Field {
     super(name);
   }
   parse(x: any) {
-    return x === 'true' ? 'true' : 'false';
+    return x === 'true' || x === true ? 'true' : 'false';
   }
   serialize(x: any) {
-    return x ? 'true' : 'false';
+    return x ? true : false;
   }
 }
 
@@ -261,9 +261,10 @@ class Table {
         new NumberField('learner'),
         new JsonField('mods'),
         new StringField('subject'),
-        new StringField('specialRoom'),
+        new BooleanField('isSpecial'),
+        new StringField('annotation'),
         new NumberField('step'),
-        new NumberField('chosenBooking')
+        new JsonField('chosenBooking')
       ]
     },
     requestSubmissions: {
@@ -274,8 +275,8 @@ class Table {
         ...Table.makeBasicStudentConfig(),
         new JsonField('mods'),
         new StringField('subject'),
-        new NumberField('studentId'),
-        new StringField('specialRoom'),
+        new BooleanField('isSpecial'),
+        new StringField('annotation'),
         new StringField('status')
       ]
     },
@@ -299,7 +300,7 @@ class Table {
         new NumberField('tutor'),
         new StringField('subject'),
         new NumberField('mod'),
-        new StringField('specialRoom')
+        new StringField('annotation')
       ]
     },
     requestForm: {
@@ -334,18 +335,16 @@ class Table {
       isForm: true,
       fields: [
         new DateField('date'),
-        new StringField('firstName'),
-        new StringField('lastName'),
-        new StringField('friendlyName'),
-        new StringField('friendlyFullName'),
-        new NumberField('studentId'),
-        new NumberField('grade'),
+        new StringField('teacherName'),
+        new StringField('teacherEmail'),
+        new StringField('numLearners'),
         new StringField('subject'),
+        new StringField('tutoringDateInformation'),
+        new NumberField('room'),
         new StringField('abDay'),
         new NumberField('mod1To10'),
-        new StringField('specialRoom'),
-        new StringField('iceCreamQuestion')
-        // contact info is intentionally omitted
+        new StringField('studentNames'),
+        new StringField('additionalInformation')
       ]
     },
     attendanceForm: {
@@ -354,7 +353,6 @@ class Table {
       fields: [
         new DateField('date'),
         new DateField('dateOfAttendance'), // optional in the form
-        new StringField('abDay'),
         new NumberField('mod1To10'),
         new NumberField('studentId'),
         new StringField('presence')
@@ -723,7 +721,7 @@ IMPORTANT EVENT HANDLERS
 */
 
 function doGet() {
-  // TODO: fix this
+  // The operation log is reset every time the website is opened.
   tableMap.operationLog().resetEntireSheet();
 
   return HtmlService.createHtmlOutputFromFile('index');
@@ -743,6 +741,9 @@ function processClientAsk(args: any[]): any {
     }
     if (args[1] === 'generateSchedule') {
       return onGenerateSchedule();
+    }
+    if (args[1] === 'retrieveMultiple') {
+      return onRetrieveMultiple(args[2] as string[]);
     }
     throw new Error('unknown command');
   }
@@ -777,11 +778,13 @@ function onClientAsk(args: any[]): string {
   return JSON.stringify(returnValue);
 }
 
-// This, and anything related to it, is 100% TODO.
 function onClientNotification(args: any[]): void {
-  // we record the logs
-  // TODO: have the client read them every 20 seconds so they know the things that other clients have done
+  // this is a way to record the logs
+  // originally, this was supposed to have the client read them every 20 seconds
+  // so they know the things that other clients have done
   // in the case that multiple clients are open at once
+  // but that plan was deemed unnecessary
+
   tableMap.operationLog().createRecord({
     id: -1,
     date: -1,
@@ -789,6 +792,14 @@ function onClientNotification(args: any[]): void {
   });
 }
 
+function debugAutoformat() {
+  try {
+    SpreadsheetApp.getUi().alert('hi');
+  } catch (err) {
+    Logger.log(stringifyError(err));
+    throw err;
+  }
+}
 function debugClientApiTest() {
   try {
     const ui = SpreadsheetApp.getUi();
@@ -909,6 +920,13 @@ function doFormSync(
 
 const MINUTES_PER_MOD = 38;
 
+function onRetrieveMultiple(resourceNames: string[]) {
+  const result = {};
+  for (const resourceName of resourceNames) {
+    result[resourceName] = tableMap[resourceName]().retrieveAllRecords();
+  }
+  return result;
+}
 function uiSyncForms() {
   try {
     const result = onSyncForms();
@@ -926,6 +944,11 @@ function onSyncForms(): number {
   // tables
   const tutors = tableMap.tutors().retrieveAllRecords();
   const matchings = tableMap.matchings().retrieveAllRecords();
+  const attendanceDays = tableMap.attendanceDays().retrieveAllRecords();
+  const attendanceDaysIndex = {};
+  for (const day of Object_values(attendanceDays)) {
+    attendanceDaysIndex[day.dateOfAttendance] = day.abDay;
+  }
 
   // parsing contact preferences
   function parseContactPref(s: string) {
@@ -1006,7 +1029,7 @@ function onSyncForms(): number {
       status: 'unchecked',
       homeroom: r.homeroom,
       homeroomTeacher: r.homeroomTeacher,
-      chosenBooking: -1
+      chosenBooking: []
     };
   }
   function processTutorRegistrationFormRecord(r: Rec): Rec {
@@ -1053,21 +1076,39 @@ function onSyncForms(): number {
     };
   }
   function processSpecialRequestFormRecord(r: Rec): Rec {
+    let annotation = '';
+    annotation += `TEACHER EMAIL: ${r.teacherEmail}\n`;
+    annotation += `# LEARNERS: ${r.numLearners}\n`;
+    annotation += `TUTORING DATE INFO: ${r.tutoringDateInformation}\n`;
+    if (r.studentNames.trim() !== '') {
+      annotation += `STUDENT NAMES: ${r.studentNames}`;
+    }
+    if (r.annotation.trim() !== '') {
+      annotation += `ADDITIONAL INFO: ${r.additionalInformation}`;
+    }
     return {
       id: -1,
       date: r.date, // the date MUST be the date from the form
-      subject: r.subject,
-      specialRoom: r.specialRoom,
+      friendlyFullName: '[special request]',
+      friendlyName: '[special request]',
+      firstName: '[special request]',
+      lastName: '[special request]',
+      grade: -1,
+      studentId: -1,
+      email: '[special request]',
+      phone: '[special request]',
+      contactPref: 'either',
+      homeroom: '[special request]',
+      homeroomTeacher: '[special request]',
+      attendanceAnnotation: '[special request]',
       mods: [parseModInfo(r.abDay, r.mod1To10)],
-      ...parseStudentConfig(r),
-      homeroom: '[writing pass is unnecessary]',
-      homeroomTeacher: '[writing pass is unnecessary]',
-      attendanceAnnotation: '',
+      subject: r.subject,
+      isSpecial: true,
+      annotation,
       status: 'unchecked'
     };
   }
   function processAttendanceFormRecord(r: Rec): Rec {
-    const mod = parseModInfo(r.abDay, r.mod1To10);
     let tutor = -1;
     let learner = -1;
     let validity = '';
@@ -1075,6 +1116,19 @@ function onSyncForms(): number {
     let minutesForLearner = -1;
     let presenceForTutor = '';
     let presenceForLearner = '';
+    let mod = -1;
+    const processedDateOfAttendance = roundDownToDay(
+      r.dateOfAttendance === -1 ? r.date : r.dateOfAttendance
+    );
+
+    if (attendanceDaysIndex[processedDateOfAttendance] === undefined) {
+      validity = 'date does not exist in attendance days index';
+    } else {
+      mod = parseModInfo(
+        attendanceDaysIndex[processedDateOfAttendance],
+        r.mod1To10
+      );
+    }
 
     // give the tutor their time
     minutesForTutor = MINUTES_PER_MOD;
@@ -1138,9 +1192,7 @@ function onSyncForms(): number {
     return {
       id: r.id,
       date: r.date,
-      dateOfAttendance: roundDownToDay(
-        r.dateOfAttendance === -1 ? r.date : r.dateOfAttendance
-      ),
+      dateOfAttendance: processedDateOfAttendance,
       validity,
       mod,
       tutor,
@@ -1158,14 +1210,11 @@ function onSyncForms(): number {
     tableMap.requestSubmissions(),
     processRequestFormRecord
   );
-  // TODO: DISABLED FOR NOW
-  /*
   numOfThingsSynced += doFormSync(
     tableMap.specialRequestForm(),
     tableMap.requestSubmissions(),
     processSpecialRequestFormRecord
   );
-  */
   numOfThingsSynced += doFormSync(
     tableMap.attendanceForm(),
     tableMap.attendanceLog(),
@@ -1628,6 +1677,7 @@ function onOpen(_ev: any) {
   menu.addItem('Generate schedule', 'uiGenerateSchedule');
   menu.addItem('Recalculate attendance', 'uiRecalculateAttendance');
   if (ARC_APP_DEBUG_MODE) {
+    menu.addItem('Debug: autoformat', 'debugAutoformat');
     menu.addItem('Debug: test client API', 'debugClientApiTest');
     menu.addItem('Debug: reset all tables', 'debugResetEverything');
     menu.addItem('Debug: reset all small tables', 'debugResetAllSmallTables');
