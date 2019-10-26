@@ -313,7 +313,6 @@ class Table {
         new DateField('date'),
         new StringField('firstName'),
         new StringField('lastName'),
-        new StringField('friendlyName'),
         new StringField('friendlyFullName'),
         new NumberField('studentId'),
         new NumberField('grade'),
@@ -974,8 +973,10 @@ function onSyncForms(): number {
     return {
       firstName: r.firstName,
       lastName: r.lastName,
-      friendlyName: r.friendlyName,
-      friendlyFullName: r.friendlyFullName,
+      friendlyName: r.friendlyName ? r.friendlyName : r.firstName,
+      friendlyFullName: r.friendlyFullName
+        ? r.friendlyFullName
+        : r.firstName + ' ' + r.lastName,
       grade: parseGrade(r.grade),
       studentId: r.studentId,
       email: r.email,
@@ -1002,7 +1003,8 @@ function onSyncForms(): number {
       ...parseStudentConfig(r),
       status: 'unchecked',
       homeroom: r.homeroom,
-      homeroomTeacher: r.homeroomTeacher
+      homeroomTeacher: r.homeroomTeacher,
+      chosenBooking: -1
     };
   }
   function processTutorRegistrationFormRecord(r: Rec): Rec {
@@ -1154,11 +1156,14 @@ function onSyncForms(): number {
     tableMap.requestSubmissions(),
     processRequestFormRecord
   );
+  // TODO: DISABLED FOR NOW
+  /*
   numOfThingsSynced += doFormSync(
     tableMap.specialRequestForm(),
     tableMap.requestSubmissions(),
     processSpecialRequestFormRecord
   );
+  */
   numOfThingsSynced += doFormSync(
     tableMap.attendanceForm(),
     tableMap.attendanceLog(),
@@ -1204,6 +1209,7 @@ function onRecalculateAttendance() {
     day: Rec
   ) {
     const tutor = tutors[tutorId];
+    const learner = learnerId === -1 ? null : learners[learnerId];
     const date = day.dateOfAttendance;
     // mark tutor as (un-?)absent at a specific date and mod
     if (day.status === 'doreset') {
@@ -1223,6 +1229,9 @@ function onRecalculateAttendance() {
       let alreadyExists = false; // if a presence or absence exists, don't add an absence
       if (tutor.attendance[date] === undefined) {
         tutor.attendance[date] = [];
+      }
+      if (learner !== null && learner.attendance[date] === undefined) {
+        learner.attendance[date] = [];
       } else {
         for (const x of tutor.attendance[date]) {
           if (x.mod === mod) {
