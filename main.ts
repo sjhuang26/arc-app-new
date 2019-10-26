@@ -122,7 +122,7 @@ class BooleanField extends Field {
     super(name);
   }
   parse(x: any) {
-    return x === 'true' || x === true ? 'true' : 'false';
+    return x === 'true' || x === true ? true : false;
   }
   serialize(x: any) {
     return x ? true : false;
@@ -264,7 +264,7 @@ class Table {
         new BooleanField('isSpecial'),
         new StringField('annotation'),
         new NumberField('step'),
-        new JsonField('chosenBooking')
+        new JsonField('chosenBookings')
       ]
     },
     requestSubmissions: {
@@ -316,7 +316,7 @@ class Table {
         new StringField('lastName'),
         new StringField('friendlyFullName'),
         new NumberField('studentId'),
-        new NumberField('grade'),
+        new StringField('grade'),
         new StringField('subject'),
         new StringField('modDataA1To5'),
         new StringField('modDataB1To5'),
@@ -724,7 +724,11 @@ function doGet() {
   // The operation log is reset every time the website is opened.
   tableMap.operationLog().resetEntireSheet();
 
-  return HtmlService.createHtmlOutputFromFile('index');
+  return HtmlService.createHtmlOutputFromFile('index')
+    .setTitle('ARC App')
+    .setFaviconUrl(
+      'https://arc-app-frontend-server.netlify.com/dist/favicon.ico'
+    );
 }
 
 function processClientAsk(args: any[]): any {
@@ -1029,7 +1033,7 @@ function onSyncForms(): number {
       status: 'unchecked',
       homeroom: r.homeroom,
       homeroomTeacher: r.homeroomTeacher,
-      chosenBooking: []
+      chosenBookings: []
     };
   }
   function processTutorRegistrationFormRecord(r: Rec): Rec {
@@ -1077,14 +1081,14 @@ function onSyncForms(): number {
   }
   function processSpecialRequestFormRecord(r: Rec): Rec {
     let annotation = '';
-    annotation += `TEACHER EMAIL: ${r.teacherEmail}\n`;
-    annotation += `# LEARNERS: ${r.numLearners}\n`;
-    annotation += `TUTORING DATE INFO: ${r.tutoringDateInformation}\n`;
+    annotation += `TEACHER EMAIL: ${r.teacherEmail}; `;
+    annotation += `# LEARNERS: ${r.numLearners}; `;
+    annotation += `TUTORING DATE INFO: ${r.tutoringDateInformation}; `;
     if (r.studentNames.trim() !== '') {
-      annotation += `STUDENT NAMES: ${r.studentNames}`;
+      annotation += `STUDENT NAMES: ${r.studentNames}; `;
     }
-    if (r.annotation.trim() !== '') {
-      annotation += `ADDITIONAL INFO: ${r.additionalInformation}`;
+    if (r.additionalInformation.trim() !== '') {
+      annotation += `ADDITIONAL INFO: ${r.additionalInformation}; `;
     }
     return {
       id: -1,
@@ -1499,30 +1503,29 @@ function onGenerateSchedule() {
 
   // Figure out all matchings that are finalized, indexed by tutor
   const index: {
-    [tutorId: string]: { isMatched: boolean; hasBeenScheduled: boolean };
+    [tutorId: string]: { matchedMods: number[]; dropInMods: number[] };
   } = {};
 
   // create a bunch of blanks in the index
   for (const x of Object_values(tutors)) {
     index[String(x.id)] = {
-      isMatched: false,
-      hasBeenScheduled: false
+      matchedMods: [],
+      dropInMods: []
     };
   }
 
   // fill in index with matchings
   for (const x of Object_values(matchings)) {
-    const name = learners[x.learner].friendlyFullName;
-    index[x.tutor].isMatched = true;
-    index[x.tutor].hasBeenScheduled = true;
+    index[x.tutor].matchedMods.push(x.mod);
     scheduleInfo.push({
       isDropIn: false,
       mod: x.mod,
       tutorName: tutors[x.tutor].friendlyFullName,
       info:
-        x.specialRoom === '' || x.specialRoom === undefined
-          ? `(w/${name})`
-          : `(w/${name} SPECIAL @room ${x.specialRoom})`
+        (x.learner === -1
+          ? ' (SPECIAL)'
+          : `(w/${learners[x.learner].friendlyFullName})`) +
+        (x.annotation === '' ? '' : ` (INFO: ${x.annotation})`)
     });
   }
 
@@ -1531,17 +1534,28 @@ function onGenerateSchedule() {
   // fill in index with drop-ins
   for (const x of Object_values(tutors)) {
     for (const mod of x.dropInMods) {
-      index[String(x.id)].hasBeenScheduled = true;
+      // if the tutor is matched, they don't count for drop-in
+      let matchedAtMod = false;
+      for (const mod2 of index[x.id].matchedMods) {
+        if (mod2 === mod) {
+          matchedAtMod = true;
+          break;
+        }
+      }
+      if (matchedAtMod) continue;
+
+      index[x.id].dropInMods.push(mod);
+
       scheduleInfo.push({
         isDropIn: true,
         mod,
         tutorName: x.friendlyFullName,
-        info: '(drop in)'
+        info: ''
       });
     }
     if (
-      !index[String(x.id)].hasBeenScheduled &&
-      !index[String(x.id)].isMatched
+      index[String(x.id)].matchedMods.length === 0 &&
+      index[String(x.id)].dropInMods.length === 0
     ) {
       unscheduledTutorNames.push(x.friendlyFullName);
     }
@@ -1650,7 +1664,7 @@ function onGenerateSchedule() {
     .setHorizontalAlignment('center');
   sheet
     .getRange(nextRow, 2, unscheduledTutorNames.length)
-    .setValues(unscheduledTutorNames.map(x => [x + ' (unscheduled)']));
+    .setValues(unscheduledTutorNames.map(x => [x]));
   nextRow += unscheduledTutorNames.length;
 
   // FOOTER
