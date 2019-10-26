@@ -321,6 +321,8 @@ class Table {
         new StringField('modDataB1To5'),
         new StringField('modDataA6To10'),
         new StringField('modDataB6To10'),
+        new StringField('homeroom'),
+        new StringField('homeroomTeacher'),
         new StringField('email'),
         new StringField('phone'),
         new StringField('contactPref'),
