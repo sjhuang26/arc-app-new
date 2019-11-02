@@ -53,6 +53,10 @@ function roundDownToDay(utcTime: number) {
   );
 }
 
+function formatAttendanceModDataString(mod: number, minutes: number) {
+  return `${Number(mod)} ${Number(minutes)}`;
+}
+
 function onlyKeepUnique<T>(arr: T[]): T[] {
   const x = {};
   for (let i = 0; i < arr.length; ++i) {
@@ -414,7 +418,10 @@ class Table {
         new NumberField('minutesForTutor'),
         new NumberField('minutesForLearner'),
         new StringField('presenceForTutor'),
-        new StringField('presenceForLearner')
+        new StringField('presenceForLearner'),
+
+        // used for reset purposes
+        new StringField('markForReset')
       ]
     },
     attendanceDays: {
@@ -1033,7 +1040,9 @@ function onSyncForms(): number {
       status: 'unchecked',
       homeroom: r.homeroom,
       homeroomTeacher: r.homeroomTeacher,
-      chosenBookings: []
+      chosenBookings: [],
+      isSpecial: false,
+      annotation: ''
     };
   }
   function processTutorRegistrationFormRecord(r: Rec): Rec {
@@ -1204,7 +1213,8 @@ function onSyncForms(): number {
       minutesForTutor,
       minutesForLearner,
       presenceForTutor,
-      presenceForLearner
+      presenceForLearner,
+      markForReset: ''
     };
   }
 
@@ -1266,51 +1276,31 @@ function onRecalculateAttendance() {
     const tutor = tutors[tutorId];
     const learner = learnerId === -1 ? null : learners[learnerId];
     const date = day.dateOfAttendance;
-    // mark tutor as (un-?)absent at a specific date and mod
-    if (day.status === 'doreset') {
-      if (tutor.attendance[date] !== undefined) {
-        // filter out some absences (excused absences are actually counted as a 1-minute presence)
-        tutor.attendance[date] = tutor.attendance[date].filter((x: any) => {
-          if (x.mod === mod && x.minutes === 0) {
-            ++numAttendancesChanged;
-            return false;
-          } else {
-            return true;
-          }
-        });
+    // mark tutor as absent
+    let alreadyExists = false; // if a presence or absence exists, don't add an absence
+    if (tutor.attendance[date] === undefined) {
+      tutor.attendance[date] = [];
+    }
+    if (learner !== null && learner.attendance[date] === undefined) {
+      learner.attendance[date] = [];
+    } else {
+      for (const attendanceModDataString of tutor.attendance[date]) {
+        const tokens = attendanceModDataString.split(' ');
+        if (Number(tokens[0]) === mod) {
+          alreadyExists = true;
+        }
       }
     }
-    if (day.status === 'doit') {
-      let alreadyExists = false; // if a presence or absence exists, don't add an absence
-      if (tutor.attendance[date] === undefined) {
-        tutor.attendance[date] = [];
+    if (!alreadyExists) {
+      // add an absence for the tutor
+      tutor.attendance[date].push(formatAttendanceModDataString(mod, 0));
+      // add an excused absence for the learner, if exists
+      if (learnerId !== -1) {
+        learners[learnerId].attendance[date].push(
+          formatAttendanceModDataString(mod, 1)
+        );
       }
-      if (learner !== null && learner.attendance[date] === undefined) {
-        learner.attendance[date] = [];
-      } else {
-        for (const x of tutor.attendance[date]) {
-          if (x.mod === mod) {
-            alreadyExists = true;
-          }
-        }
-      }
-      if (!alreadyExists) {
-        // add an absence for the tutor
-        tutor.attendance[date].push({
-          date,
-          mod,
-          minutes: 0
-        });
-        // add an excused absence for the learner, if exists
-        if (learnerId !== -1) {
-          learners[learnerId].attendance[date].push({
-            date,
-            mod,
-            minutes: 1
-          });
-        }
-        numAttendancesChanged += 2;
-      }
+      numAttendancesChanged += 2;
     }
   }
 
@@ -1319,22 +1309,42 @@ function onRecalculateAttendance() {
     entry: Rec,
     minutes: number
   ) {
+    let isNew = true;
     if (attendance[entry.dateOfAttendance] === undefined) {
       attendance[entry.dateOfAttendance] = [];
-    }
-    let isNew = true;
-    for (const i of attendance[entry.dateOfAttendance]) {
-      if (entry.mod === i.mod) {
-        isNew = false;
+    } else {
+      for (const attendanceModDataString of attendance[
+        entry.dateOfAttendance
+      ]) {
+        const tokens = attendanceModDataString.split(' ');
+        if (entry.mod === Number(tokens[0])) {
+          isNew = false;
+        }
       }
     }
-    if (isNew) {
-      attendance[entry.dateOfAttendance].push({
-        date: entry.dateOfAttendance,
-        mod: entry.mod,
-        minutes
-      });
-      ++numAttendancesChanged;
+    // RESET BEHAVIOR PART 1: remove attendance logs marked with a reset flag
+    if (entry.markForReset === 'doreset') {
+      if (!isNew) {
+        attendance[entry.dateOfAttendance] = attendance[
+          entry.dateOfAttendance
+        ].filter((attendanceModDataString: string) => {
+          const tokens = attendanceModDataString.split(' ');
+          if (Number(tokens[0]) === entry.mod) {
+            ++numAttendancesChanged;
+            return false;
+          } else {
+            return true;
+          }
+        });
+      }
+    } else {
+      if (isNew) {
+        // SPECIAL DATA FORMAT TO SAVE SPACE
+        attendance[entry.dateOfAttendance].push(
+          formatAttendanceModDataString(entry.mod, minutes)
+        );
+        ++numAttendancesChanged;
+      }
     }
   }
 
@@ -1351,6 +1361,10 @@ function onRecalculateAttendance() {
 
   // PROCESS EACH ATTENDANCE LOG ENTRY
   for (const entry of attendanceLogArray) {
+    if (entry.validity !== '') {
+      // exclude the entry
+      continue;
+    }
     if (entry.tutor !== -1) {
       applyAttendanceForStudent(
         tutors[entry.tutor].attendance,
@@ -1418,18 +1432,38 @@ function onRecalculateAttendance() {
     const isBDay: boolean = calculateIsBDay(day.abDay);
 
     // iterate through all tutors & hunt down the ones that didn't fill out the form
-    for (const tutor of tutorsArray) {
-      for (let i = isBDay ? 10 : 0; i < (isBDay ? 20 : 10); ++i) {
-        const x = tutorAttendanceFormIndex[tutor.id].mod[i];
-        if (x !== undefined && !x.wasFormSubmitted) {
-          whenTutorFormNotFilledOutLogic(tutor.id, x.learnerId, i, day);
+    if (day.status === 'doit') {
+      for (const tutor of tutorsArray) {
+        for (let i = isBDay ? 10 : 0; i < (isBDay ? 20 : 10); ++i) {
+          const x = tutorAttendanceFormIndex[tutor.id].mod[i];
+          if (x !== undefined && !x.wasFormSubmitted) {
+            whenTutorFormNotFilledOutLogic(tutor.id, x.learnerId, i, day);
+          }
+        }
+        if (
+          tutor.attendance[day.dateOfAttendance] !== undefined &&
+          tutor.attendance[day.dateOfAttendance].length === 0
+        ) {
+          delete tutor.attendance[day.dateOfAttendance];
         }
       }
-      if (
-        tutor.attendance[day.dateOfAttendance] !== undefined &&
-        tutor.attendance[day.dateOfAttendance].length === 0
-      ) {
-        delete tutor.attendance[day.dateOfAttendance];
+    } else if (day.status === 'doreset') {
+      for (const tutor of tutorsArray) {
+        if (tutor.attendance[day.dateOfAttendance] !== undefined) {
+          // delete EVERY ABSENCE for that day (but keep excused)
+          // this gets rid of anything automatically generated for that day
+          tutor.attendance[day.dateOfAttendance] = tutor.attendance[
+            day.dateOfAttendance
+          ].filter((attendanceModDataString: string) => {
+            const tokens = attendanceModDataString.split(' ');
+            if (Number(tokens[1]) === 0) {
+              ++numAttendancesChanged;
+              return false;
+            } else {
+              return true;
+            }
+          });
+        }
       }
     }
 
@@ -1496,7 +1530,7 @@ function onGenerateSchedule() {
 
   // Header
   sheet.appendRow(['ARC SCHEDULE']);
-  sheet.appendRow([`Automatically generated on ${new Date()}`]);
+  sheet.appendRow(['']);
 
   // Create a list of [ mod, tutorName, info about matching, as string ]
   const scheduleInfo: ScheduleEntry[] = []; // mod = -1 means that the tutor has no one
@@ -1562,9 +1596,32 @@ function onGenerateSchedule() {
   }
 
   // Print!
+  // COLOR SCHEME
+  const COLOR_SCHEME_STRING = 'ff99c8-fcf6bd-d0f4de-a9def9-e4c1f9';
+  const COLOR_SCHEME = COLOR_SCHEME_STRING.split('-');
+  const DAY_OF_WEEK = new Date().getDay();
+  // calculate the color based on the day of the week
+  const PRIMARY_COLOR =
+    '#' +
+    COLOR_SCHEME[
+      {
+        0: 0,
+        1: 1,
+        2: 2,
+        3: 3,
+        4: 4,
+        5: 2,
+        6: 3
+      }[DAY_OF_WEEK]
+    ];
+  const SECONDARY_COLOR = '#383f51';
+
+  // FORMAT SHEET
+  sheet.setHiddenGridlines(true);
+
   // CHANGE COLUMNS
   sheet.deleteColumns(5, sheet.getMaxColumns() - 5);
-  sheet.setColumnWidth(1, 30);
+  sheet.setColumnWidth(1, 50);
   sheet.setColumnWidth(2, 300);
   sheet.setColumnWidth(3, 30);
   sheet.setColumnWidth(4, 300);
@@ -1577,12 +1634,8 @@ function onGenerateSchedule() {
     .setValue('ARC Schedule')
     .setFontSize(36)
     .setHorizontalAlignment('center');
-  sheet
-    .getRange(2, 1)
-    .setValue('Automatically generated on ' + new Date().toISOString())
-    .setFontSize(14)
-    .setHorizontalAlignment('center');
-  sheet.setRowHeight(3, 30);
+  sheet.setRowHeight(2, 15);
+  sheet.setRowHeight(3, 15);
   sheet
     .getRange(4, 2)
     .setValue('A Days')
@@ -1594,6 +1647,7 @@ function onGenerateSchedule() {
     .setFontSize(18)
     .setHorizontalAlignment('center');
   sheet.setRowHeight(5, 30);
+  sheet.getRange(1, 1, 4, 5).setBackground(PRIMARY_COLOR);
 
   const layoutMatrix: [ScheduleEntry[], ScheduleEntry[]][] = []; // [mod0to9][abday]
   for (let i = 0; i < 10; ++i) {
@@ -1625,6 +1679,7 @@ function onGenerateSchedule() {
         .getRange(nextRow, 2, layoutMatrix[i][0].length)
         .setValues(layoutMatrix[i][0].map(x => [`${x.tutorName} ${x.info}`]))
         .setWrap(true)
+        .setFontSize(12)
         .setFontColors(
           layoutMatrix[i][0].map(x => [x.isDropIn ? 'black' : 'red'])
         );
@@ -1634,6 +1689,7 @@ function onGenerateSchedule() {
         .getRange(nextRow, 4, layoutMatrix[i][1].length)
         .setValues(layoutMatrix[i][1].map(x => [`${x.tutorName} ${x.info}`]))
         .setWrap(true)
+        .setFontSize(12)
         .setFontColors(
           layoutMatrix[i][1].map(x => [x.isDropIn ? 'black' : 'red'])
         );
@@ -1657,6 +1713,18 @@ function onGenerateSchedule() {
     .setFontStyle('italic')
     .setHorizontalAlignment('center')
     .setWrap(true);
+  sheet
+    .getRange(nextRow, 2, unscheduledTutorNames.length + 1, 3)
+    .setBorder(
+      true,
+      true,
+      true,
+      true,
+      null,
+      null,
+      PRIMARY_COLOR,
+      SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+    );
   ++nextRow;
   sheet
     .getRange(nextRow, 2, unscheduledTutorNames.length, 3)
@@ -1664,16 +1732,32 @@ function onGenerateSchedule() {
     .setHorizontalAlignment('center');
   sheet
     .getRange(nextRow, 2, unscheduledTutorNames.length)
+    .setFontSize(12)
     .setValues(unscheduledTutorNames.map(x => [x]));
   nextRow += unscheduledTutorNames.length;
 
   // FOOTER
+  sheet.getRange(nextRow, 1, 1, 5).merge();
+  sheet.setRowHeight(nextRow, 20);
+  ++nextRow;
+
   sheet
-    .getRange(nextRow, 2, 1, 4)
+    .getRange(nextRow, 1, 1, 5)
     .merge()
-    .setValue(`That's all!`)
-    .setFontSize(18)
-    .setFontStyle('italic')
+    .setValue(`Schedule auto-generated on ${new Date()}`)
+    .setFontSize(10)
+    .setFontColor('white')
+    .setBackground(SECONDARY_COLOR)
+    .setHorizontalAlignment('center');
+  ++nextRow;
+
+  sheet
+    .getRange(nextRow, 1, 1, 5)
+    .merge()
+    .setValue(`ARC App designed by Suhao Jeffrey Huang`)
+    .setFontSize(10)
+    .setFontColor('white')
+    .setBackground(SECONDARY_COLOR)
     .setHorizontalAlignment('center');
   ++nextRow;
 
@@ -1682,6 +1766,10 @@ function onGenerateSchedule() {
     sheet.getLastRow() + 1,
     sheet.getMaxRows() - sheet.getLastRow()
   );
+
+  // FONT
+  sheet.getDataRange().setFontFamily('Helvetica');
+
   return null;
 }
 
