@@ -1506,6 +1506,8 @@ function onGenerateSchedule() {
   };
 
   const sortComparator = (a: ScheduleEntry, b: ScheduleEntry) => {
+    if (a.isDropIn < b.isDropIn) return -1;
+    if (a.isDropIn > b.isDropIn) return 1;
     const x = a.tutorName.toLowerCase();
     const y = b.tutorName.toLowerCase();
     if (x < y) return -1;
