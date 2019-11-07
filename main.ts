@@ -46,11 +46,8 @@ UTILITIES
 */
 
 function roundDownToDay(utcTime: number) {
-  const timeInThisTimezone = utcTime - 4 * 3600 * 1000;
-  return (
-    Math.floor(timeInThisTimezone / 1000 / 86400) * 86400 * 1000 +
-    4 * 3600 * 1000
-  );
+  const tzOffset = new Date(utcTime).getTimezoneOffset() * 60 * 1000;
+  return utcTime - (utcTime % (24 * 60 * 60 * 1000)) + tzOffset;
 }
 
 function formatAttendanceModDataString(mod: number, minutes: number) {
@@ -1787,6 +1784,36 @@ function onOpen(_ev: any) {
     menu.addItem('Debug: reset all small tables', 'debugResetAllSmallTables');
     menu.addItem('Debug: rebuild all headers', 'debugHeaders');
     menu.addItem('Debug: rewrite all tables', 'debugRewriteEverything');
+    menu.addItem('Debug: run temporary script', 'debugRunTemporaryScript');
   }
   menu.addToUi();
+}
+
+function debugRunTemporaryScript() {
+  /*
+  Clean any attendance times that are not an "integer" number of days.
+
+  const tutors = Object_values(tableMap.tutors().retrieveAllRecords());
+  const learners = Object_values(tableMap.learners().retrieveAllRecords());
+  let count = 0;
+  for (const tutor of tutors) {
+    for (const x of Object.getOwnPropertyNames(tutor.attendance)) {
+      if (roundDownToDay(Number(x)) !== Number(x)) {
+        ++count;
+        delete tutor.attendance[x];
+      }
+    }
+  }
+  for (const learner of learners) {
+    for (const x of Object.getOwnPropertyNames(learner.attendance)) {
+      if (roundDownToDay(Number(x)) !== Number(x)) {
+        ++count;
+        delete learner.attendance[x];
+      }
+    }
+  }
+  tableMap.tutors().updateAllRecords(tutors);
+  tableMap.learners().updateAllRecords(learners);
+  SpreadsheetApp.getUi().alert(String(count));
+  */
 }
