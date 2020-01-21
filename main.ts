@@ -800,14 +800,6 @@ function onClientNotification(args: any[]): void {
   });
 }
 
-function debugAutoformat() {
-  try {
-    SpreadsheetApp.getUi().alert('hi');
-  } catch (err) {
-    Logger.log(stringifyError(err));
-    throw err;
-  }
-}
 function debugClientApiTest() {
   try {
     const ui = SpreadsheetApp.getUi();
@@ -1319,7 +1311,7 @@ function onRecalculateAttendance() {
         }
       }
     }
-    // RESET BEHAVIOR PART 1: remove attendance logs marked with a reset flag
+    // RESET BEHAVIOR: remove attendance logs marked with a reset flag
     if (entry.markForReset === 'doreset') {
       if (!isNew) {
         attendance[entry.dateOfAttendance] = attendance[
@@ -1772,11 +1764,88 @@ function onGenerateSchedule() {
   return null;
 }
 
+function uiDeDuplicateTutorsAndLearners() {
+  const PROMPT_TEXT =
+    'This command will de-duplicate tutors and learners. Old form submissions are replaced with newer form submissions. Type the word "proceed" to proceed. Leave the box blank to cancel.';
+
+  try {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.prompt(PROMPT_TEXT);
+    if (response.getResponseText() === 'proceed') {
+      const numberOfOperations = deDuplicateTutorsAndLearners();
+      SpreadsheetApp.getUi().alert(
+        `${numberOfOperations} de-duplications performed`
+      );
+    }
+  } catch (err) {
+    Logger.log(stringifyError(err));
+    throw err;
+  }
+}
+
+function deDuplicateTutorsAndLearners(): number {
+  let numberOfOperations = 0;
+  numberOfOperations += deDuplicateTableByStudentId(tableMap.tutors());
+  numberOfOperations += deDuplicateTableByStudentId(tableMap.learners());
+  return numberOfOperations;
+}
+
+function deDuplicateTableByStudentId(table: Table): number {
+  let numberOfOperations = 0;
+  type ReplacementMap = { [studentId: number]: { recordIds: number[] } };
+
+  const replacementMap: ReplacementMap = {};
+
+  const recordObject = table.retrieveAllRecords();
+  for (const record of Object_values(recordObject)) {
+    if (replacementMap[record.studentId] === undefined) {
+      replacementMap[record.studentId] = { recordIds: [record.id] };
+    } else {
+      replacementMap[record.studentId].recordIds.push(record.id);
+    }
+  }
+  // If a student ID has multiple records, delete all but the newest (highest ID)
+  // and the remaining record should have ID edited to the oldest record
+  for (const mapItem of Object_values(replacementMap)) {
+    if (mapItem.recordIds.length >= 2) {
+      let lowestId = mapItem.recordIds[0];
+      let highestId = mapItem.recordIds[0];
+      for (let i = 1; i < mapItem.recordIds.length; ++i) {
+        if (mapItem.recordIds[i] < lowestId) {
+          lowestId = mapItem.recordIds[i];
+        }
+        if (mapItem.recordIds[i] > highestId) {
+          highestId = mapItem.recordIds[i];
+        }
+      }
+
+      // delete all records not equal to the highest ID
+      for (let i = 0; i < mapItem.recordIds.length; ++i) {
+        if (highestId !== mapItem.recordIds[i]) {
+          table.deleteRecord(mapItem.recordIds[i]);
+          ++numberOfOperations;
+        }
+      }
+
+      // This edits the ID of the record, which is very uncommon,
+      // so the second argument of updateRecord is invoked.
+      recordObject[highestId].id = lowestId;
+      table.updateRecord(recordObject[highestId], table.getRowById(highestId));
+      ++numberOfOperations;
+    }
+  }
+  return numberOfOperations;
+}
+
 function onOpen(_ev: any) {
   const menu = SpreadsheetApp.getUi().createMenu('ARC APP');
   menu.addItem('Sync data from forms', 'uiSyncForms');
   menu.addItem('Generate schedule', 'uiGenerateSchedule');
   menu.addItem('Recalculate attendance', 'uiRecalculateAttendance');
+  menu.addItem(
+    'De-duplicate tutors and learners',
+    'uiDeDuplicateTutorsAndLearners'
+  );
   if (ARC_APP_DEBUG_MODE) {
     menu.addItem('Debug: autoformat', 'debugAutoformat');
     menu.addItem('Debug: test client API', 'debugClientApiTest');
