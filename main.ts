@@ -1265,6 +1265,12 @@ function onRecalculateAttendance() {
     const tutor = tutors[tutorId];
     const learner = learnerId === -1 ? null : learners[learnerId];
     const date = day.dateOfAttendance;
+    if (tutor === undefined) {
+      throw new Error(`tutor does not exist (${tutorId})`);
+    }
+    if (learner === undefined) {
+      throw new Error(`learner does not exist (${learnerId})`);
+    }
     // mark tutor as absent
     let alreadyExists = false; // if a presence or absence exists, don't add an absence
     if (tutor.attendance[date] === undefined) {
@@ -1294,10 +1300,19 @@ function onRecalculateAttendance() {
   }
 
   function applyAttendanceForStudent(
-    attendance: any,
+    collection: RecCollection,
+    id: number,
     entry: Rec,
     minutes: number
   ) {
+    const record = collection[id];
+    if (record === undefined) {
+      // This is not a fatal error, especially since we want to retroactively
+      // run attendance calculations, but give a log message
+      Logger.log(`attendance: record not found ${id}`);
+      return;
+    }
+    const attendance = record.attendance;
     let isNew = true;
     if (attendance[entry.dateOfAttendance] === undefined) {
       attendance[entry.dateOfAttendance] = [];
@@ -1356,14 +1371,16 @@ function onRecalculateAttendance() {
     }
     if (entry.tutor !== -1) {
       applyAttendanceForStudent(
-        tutors[entry.tutor].attendance,
+        tutors,
+        entry.tutor,
         entry,
         entry.minutesForTutor
       );
     }
     if (entry.learner !== -1) {
       applyAttendanceForStudent(
-        learners[entry.learner].attendance,
+        learners,
+        entry.learner,
         entry,
         entry.minutesForLearner
       );
@@ -1774,7 +1791,7 @@ function uiDeDuplicateTutorsAndLearners() {
     if (response.getResponseText() === 'proceed') {
       const numberOfOperations = deDuplicateTutorsAndLearners();
       SpreadsheetApp.getUi().alert(
-        `${numberOfOperations} de-duplications performed`
+        `${numberOfOperations} de-duplication operations performed`
       );
     }
   } catch (err) {
@@ -1830,6 +1847,20 @@ function deDuplicateTableByStudentId(table: Table): number {
       // This edits the ID of the record, which is very uncommon,
       // so the second argument of updateRecord is invoked.
       recordObject[highestId].id = lowestId;
+
+      // IMPORTANT OPERATION: Copy the old attendance into the new attendance,
+      // the old attendanceAnnotation into the new attendanceAnnotation, etc.
+      // We want to preserve all of these fields!!!
+      for (const field of [
+        'attendance',
+        'attendanceAnnotation',
+        'dropInMods',
+        'additionalHours'
+      ]) {
+        if (recordObject[lowestId].hasOwnProperty(field)) {
+          recordObject[highestId][field] = recordObject[lowestId][field];
+        }
+      }
       table.updateRecord(recordObject[highestId], table.getRowById(highestId));
       ++numberOfOperations;
     }
