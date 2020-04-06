@@ -247,16 +247,6 @@ namespace TableInfo {
       ],
     ],
     [
-      "formInfo",
-      "$form-info",
-      [
-        StringField("origin"),
-        StringField("hash"),
-        JsonField("json"),
-        StringField("archive"),
-      ],
-    ],
-    [
       "tutors",
       "$tutors",
       [
@@ -414,64 +404,50 @@ namespace TableIO {
       }
     }
   }
-}
 
-/*
-
-Spec: forms
-
-MUST have every form linked to the table $form-info
-MUST have a single-stop conversion utility
-  Update forms
-MUST have a custom record parser
-TODO: start with attendance core logic
-*/
-
-const FORM_INFO_MASTER_ARRAY = [
-  ["requestForm", "$request-form"],
-  ["specialRequestForm", "$special-request-form"],
-  ["attendanceForm", "$attendance-form"],
-  ["tutorRegistrationForm", "$tutor-registration-form"],
-]
-
-class Table {
-  io: TableIO.Info
-
-  static readAllRecords(key: string) {
-    return new Table(key).retrieveAllRecords()
-  }
-
-  constructor(key: string) {
-    this.io = TableIO.use(key)
-  }
-
-  retrieveAllRecords(): RecCollection {
-    if (this.io.sheet.getLastColumn() !== this.io.fields.length) {
-      throw new Error()
-    }
-    const raw = this.io.sheet.getDataRange().getValues()
-    const res = {}
+  export function retrieveAllRecords(
+    parseRecord: (raw: any[]) => Rec,
+    sheet: GoogleAppsScript.Spreadsheet.Sheet
+  ): RecCollection {
+    const raw = sheet.getDataRange().getValues()
+    const res: RecCollection = {}
     for (let i = 1; i < raw.length; ++i) {
-      const rec = this.parseRecord(raw[i])
+      const rec = parseRecord(raw[i])
       res[String(rec.id)] = rec
     }
     return res
   }
-  parseRecord(raw: any[]): Rec {
+
+  export function parseRecord(raw: any[], fields: [FieldType, string][]): Rec {
     const rec: { [key: string]: any } = {}
-    for (let i = 0; i < this.io.fields.length; ++i) {
-      const field = this.io.fields[i]
+    for (let i = 0; i < fields.length; ++i) {
+      const field = fields[i]
       // this accounts for blanks in the last field
       rec[field[1]] = Parsing.parseField(
         raw[i] === undefined ? "" : raw[i],
         field[0]
       )
     }
-    if (rec.id === undefined) {
-      // TODO Spec: forms
-      rec.id = rec.date
-    }
     return rec as Rec
+  }
+}
+
+class Table {
+  io: TableIO.Info
+
+  constructor(key: string) {
+    this.io = TableIO.use(key)
+  }
+
+  static readAllRecords(key: string) {
+    return new Table(key).readAllRecords()
+  }
+
+  readAllRecords() {
+    return TableIO.retrieveAllRecords(
+      (raw) => TableIO.parseRecord(raw, this.io.fields),
+      this.io.sheet
+    )
   }
 
   serializeRecord(record: Rec): any[] {
@@ -616,7 +592,7 @@ function processClientAsk(args: any[]): any {
   })
   // might throw
   const table = new Table(args[0])
-  tryThis(1, "retrieveAll", table.retrieveAllRecords)
+  tryThis(1, "retrieveAll", () => Table.readAllRecords(args[2]))
   tryThis(1, "update", () => table.updateRecord(args[2]))
   tryThis(1, "create", () => table.createRecord(args[2]))
   tryThis(1, "delete", () => table.deleteRecord(args[2]))
@@ -686,8 +662,8 @@ function doFormSync(
   actualTable: Table,
   formRecordToActualRecord: (formRecord: Rec) => Rec
 ): number {
-  const actualRecords = actualTable.retrieveAllRecords()
-  const formRecords = formTable.retrieveAllRecords()
+  const actualRecords = actualTable.readAllRecords()
+  const formRecords = formTable.readAllRecords()
 
   let numOfThingsSynced = 0
 
@@ -836,7 +812,6 @@ function onSyncForms(): number {
         r.modDataB6To10,
       ]),
       specialRoom: "",
-      ...parseStudentConfig(r),
       status: "unchecked",
       homeroom: r.homeroom,
       homeroomTeacher: r.homeroomTeacher,
@@ -858,14 +833,13 @@ function onSyncForms(): number {
     return {
       id: -1,
       date: r.date,
-      ...parseStudentConfig(r),
-      mods: parseModData([
+      mods: Parsing.modData([
         r.modDataA1To5,
         r.modDataB1To5,
         r.modDataA6To10,
         r.modDataB6To10,
       ]),
-      modsPref: parseModData([
+      modsPref: Parsing.modData([
         r.modDataPrefA1To5,
         r.modDataPrefB1To5,
         r.modDataPrefA6To10,
@@ -914,7 +888,7 @@ function onSyncForms(): number {
       homeroom: "[special request]",
       homeroomTeacher: "[special request]",
       attendanceAnnotation: "[special request]",
-      mods: [parseModInfo(r.abDay, r.mod1To10)],
+      mods: [Parsing.modInfo(r.abDay, r.mod1To10)],
       subject: r.subject,
       isSpecial: true,
       annotation,
@@ -937,7 +911,7 @@ function onSyncForms(): number {
     if (attendanceDaysIndex[processedDateOfAttendance] === undefined) {
       validity = "date does not exist in attendance days index"
     } else {
-      mod = parseModInfo(
+      mod = Parsing.modInfo(
         attendanceDaysIndex[processedDateOfAttendance],
         r.mod1To10
       )
@@ -1020,23 +994,23 @@ function onSyncForms(): number {
 
   let numOfThingsSynced = 0
   numOfThingsSynced += doFormSync(
-    tableMap.requestForm(),
-    tableMap.requestSubmissions(),
+    new Table("requestForm"),
+    new Table("requestSubmissions"),
     processRequestFormRecord
   )
   numOfThingsSynced += doFormSync(
-    tableMap.specialRequestForm(),
-    tableMap.requestSubmissions(),
+    new Table("specialRequestForm"),
+    new Table("requestSubmissions"),
     processSpecialRequestFormRecord
   )
   numOfThingsSynced += doFormSync(
-    tableMap.attendanceForm(),
-    tableMap.attendanceLog(),
+    new Table("attendanceForm"),
+    new Table("attendanceLog"),
     processAttendanceFormRecord
   )
   numOfThingsSynced += doFormSync(
-    tableMap.tutorRegistrationForm(),
-    tableMap.tutors(),
+    new Table("tutorRegistrationForm"),
+    new Table("tutors"),
     processTutorRegistrationFormRecord
   )
   return numOfThingsSynced
@@ -1601,8 +1575,8 @@ function uiDeDuplicateTutorsAndLearners() {
     const response = ui.prompt(PROMPT_TEXT)
     if (response.getResponseText() === "proceed") {
       let numberOfOperations = 0
-      numberOfOperations += deDuplicateTableByStudentId(new Table("tutors"))
-      numberOfOperations += deDuplicateTableByStudentId(new Table("learners"))
+      numberOfOperations += deDuplicateTableByStudentId("tutors")
+      numberOfOperations += deDuplicateTableByStudentId("learners")
       SpreadsheetApp.getUi().alert(
         `${numberOfOperations} de-duplication operations performed`
       )
@@ -1613,13 +1587,14 @@ function uiDeDuplicateTutorsAndLearners() {
   }
 }
 
-function deDuplicateTableByStudentId(table: Table): number {
+function deDuplicateTableByStudentId(tableKey: string): number {
   let numberOfOperations = 0
   type ReplacementMap = { [studentId: number]: { recordIds: number[] } }
 
   const replacementMap: ReplacementMap = {}
 
-  const recordObject = table.retrieveAllRecords()
+  const table = new Table(tableKey)
+  const recordObject = table.readAllRecords()
   for (const record of Object_values(recordObject)) {
     if (replacementMap[record.studentId] === undefined) {
       replacementMap[record.studentId] = { recordIds: [record.id] }
