@@ -1352,11 +1352,22 @@ function onGenerateSchedule() {
 
   // Note: Bookings are deliberately ignored.
   const tutorIndex = schedulingTutorIndex(tutors, {}, matchings)
-  const unscheduledTutorNames: string[] = []
+  const otherTutorStrings: string[] = []
   const layoutMatrix: [ScheduleEntry[], ScheduleEntry[]][] = [] // [mod0to9][abday]
 
   for (let i = 0; i < 10; ++i) {
     layoutMatrix[i] = [[], []]
+  }
+
+  function matchingToText(matching: Rec) {
+    let result = ""
+    if (matching.learner !== -1) {
+      result += `(w/${learners[matching.learner].name})`
+    }
+    if (matching.annotation !== "") {
+      result += `(${matching.annotation})`
+    }
+    return result
   }
 
   function matchingsInfo(mod: number, refs: [SchedulingReference, number][]) {
@@ -1364,13 +1375,7 @@ function onGenerateSchedule() {
       if (sr === SchedulingReference.MATCHING) {
         const matching = matchings[srid]
         if (matching.mod !== mod) continue
-        let result = ""
-        if (matching.learner !== -1) {
-          result += `(w/${learners[matching.learner].name})`
-        }
-        if (matching.annotation !== "") {
-          result += `(${matching.annotation})`
-        }
+        return matchingToText(matching)
       }
     }
   }
@@ -1397,7 +1402,17 @@ function onGenerateSchedule() {
         }
       }
     } else {
-      unscheduledTutorNames.push(tutors[x.id].name)
+      otherTutorStrings.push(
+        String(tutors[x.id].name) +
+          x.refs
+            .filter(
+              ([sr, srid]) =>
+                sr === SchedulingReference.MATCHING &&
+                matchings[srid].mod === -1
+            )
+            .map(([sr, srid]) => matchingToText(matchings[srid]))
+            .join(" ")
+      )
     }
   }
 
@@ -1512,13 +1527,13 @@ function onGenerateSchedule() {
   sheet
     .getRange(nextRow, 2, 1, 3)
     .merge()
-    .setValue(`Unscheduled tutors`)
+    .setValue(`Other tutors`)
     .setFontSize(18)
     .setFontStyle("italic")
     .setHorizontalAlignment("center")
     .setWrap(true)
   sheet
-    .getRange(nextRow, 2, unscheduledTutorNames.length + 1, 3)
+    .getRange(nextRow, 2, otherTutorStrings.length + 1, 3)
     .setBorder(
       true,
       true,
@@ -1531,14 +1546,14 @@ function onGenerateSchedule() {
     )
   ++nextRow
   sheet
-    .getRange(nextRow, 2, unscheduledTutorNames.length, 3)
+    .getRange(nextRow, 2, otherTutorStrings.length, 3)
     .mergeAcross()
     .setHorizontalAlignment("center")
   sheet
-    .getRange(nextRow, 2, unscheduledTutorNames.length)
+    .getRange(nextRow, 2, otherTutorStrings.length)
     .setFontSize(12)
-    .setValues(unscheduledTutorNames.map((x) => [x]))
-  nextRow += unscheduledTutorNames.length
+    .setValues(otherTutorStrings.map((x) => [x]))
+  nextRow += otherTutorStrings.length
 
   // FOOTER
   sheet.getRange(nextRow, 1, 1, 5).merge()
