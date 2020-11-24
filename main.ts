@@ -212,22 +212,70 @@ TODO: a way to lock tables from write
 */
 
 namespace TableInfo {
-  function StringField(key: string): [FieldType, string] {
-    return [FieldType.STRING, key]
+  type LiteralString<T> = T extends string ? (string extends T ? never : T) : never;
+  function StringField<T>(key: LiteralString<T>) {
+    return [FieldType.STRING, key] as const;
   }
-  function NumberField(key: string): [FieldType, string] {
-    return [FieldType.NUMBER, key]
+  function NumberField<T>(key: LiteralString<T>) {
+    return [FieldType.NUMBER, key] as const;
   }
-  function DateField(key: string): [FieldType, string] {
-    return [FieldType.DATE, key]
+  function DateField<T>(key: LiteralString<T>) {
+    return [FieldType.DATE, key] as const
   }
-  function BooleanField(key: string): [FieldType, string] {
-    return [FieldType.BOOLEAN, key]
+  function BooleanField<T>(key: LiteralString<T>) {
+    return [FieldType.BOOLEAN, key] as const
   }
-  function JsonField(key: string): [FieldType, string] {
-    return [FieldType.JSON, key]
+  function JsonField<T>(key: LiteralString<T>) {
+    return [FieldType.JSON, key] as const
   }
-  export const ARRAY_1: [string, string, [FieldType, string][]][] = [
+  function addIdAndDate(x: typeof tableInfoData): AddIdAndDateAndConvertToObject {
+    return Object.fromEntries(x.map((y) => {
+      return [y[0], [y[0], y[1], y[3] == true ? [...arrayOfDate, ...y[2]] : [...arrayOfIdAndDate, ...y[2]]]]
+    })) as any;
+  }
+
+  const arrayOfIdAndDate = [NumberField('id'), DateField('date')] as const;
+  const arrayOfDate = [DateField('date')] as const;
+
+  //type AddIdAndDateAndConvertToObject<T extends readonly (readonly [string, string, readonly unknown[]])[]> = T extends readonly [infer U, ...infer V] ? (U extends readonly [string, string, readonly unknown[]] ? {[key: U[0]]: {key: U[0], sheetName: U[1], fields: [...(typeof arrayOfIdAndDate), ...U[2]]}, ...V} : never) : []
+  type AddIdAndDateAndConvertToObject = { readonly [U in (typeof tableInfoData)[number]as U[0]]: {
+    readonly key: U[0],
+    readonly sheetName: U[1],
+    readonly fields: (true extends U[3] ? [...(typeof arrayOfDate), ...U[2]] : [...(typeof arrayOfIdAndDate), ...U[2]])
+  } };
+
+  export type ParseRecordType<T extends FieldsType> = {
+    [U in (T[number]) as U[1]]: ParseFieldType<U[0]>
+  }
+
+  export type Rec<T extends keyof infoType> = ParseRecordType<infoType[T]['fields']>
+
+  export type ParseFieldType<T extends FieldType> =
+    FieldType.STRING extends T ? string
+    : FieldType.NUMBER extends T ? number
+    : FieldType.DATE extends T ? number
+    : FieldType.BOOLEAN extends T ? boolean
+    : FieldType.JSON extends T ? any
+    : never
+
+  export type FieldsType = TableInfo.infoType[keyof TableInfo.infoType]['fields'];
+
+  const basicStudentConfig = [
+    StringField('friendlyFullName'),
+    StringField('friendlyName'),
+    StringField('firstName'),
+    StringField('lastName'),
+    NumberField('grade'),
+    NumberField('studentId'),
+    StringField('email'),
+    StringField('phone'),
+    StringField('contactPref'),
+    StringField('homeroom'),
+    StringField('homeroomTeacher'),
+    StringField('attendanceAnnotation')
+  ];
+
+  const tableInfoData = [
     [
       "studentInfo",
       "$student-info",
@@ -250,7 +298,7 @@ namespace TableInfo {
       "tutors",
       "$tutors",
       [
-        NumberField("studentInfo"),
+        NumberField('studentInfo'),
         JsonField("mods"),
         JsonField("modsPref"),
         StringField("subjectList"),
@@ -276,6 +324,7 @@ namespace TableInfo {
       "requestSubmissions",
       "$request-submissions",
       [
+        ...basicStudentConfig,
         JsonField("mods"),
         StringField("subject"),
         BooleanField("isSpecial"),
@@ -338,7 +387,150 @@ namespace TableInfo {
         StringField("status"), // upcoming, finished, finalized, unreset, reset
       ],
     ],
-  ]
+    [
+      'requestForm',
+      '$request-form',
+      [
+        StringField('firstName'),
+        StringField('lastName'),
+        StringField('friendlyFullName'),
+        NumberField('studentId'),
+        StringField('grade'),
+        StringField('subject'),
+        StringField('modDataA1To5'),
+        StringField('modDataB1To5'),
+        StringField('modDataA6To10'),
+        StringField('modDataB6To10'),
+        StringField('homeroom'),
+        StringField('homeroomTeacher'),
+        StringField('email'),
+        StringField('phone'),
+        StringField('contactPref'),
+        StringField('iceCreamQuestion')
+      ],
+      true
+    ],
+    [
+      'specialRequestForm',
+      '$special-request-form',
+      [
+        DateField('date'),
+        StringField('teacherName'),
+        StringField('teacherEmail'),
+        StringField('numLearners'),
+        StringField('subject'),
+        StringField('tutoringDateInformation'),
+        NumberField('room'),
+        StringField('abDay'),
+        NumberField('mod1To10'),
+        StringField('studentNames'),
+        StringField('additionalInformation')
+      ],
+      true
+    ],
+    [
+      'attendanceForm',
+      '$attendance-form',
+      [
+        DateField('date'),
+        DateField('dateOfAttendance'), // optional in the form
+        NumberField('mod1To10'),
+        NumberField('studentId'),
+        StringField('presence')
+      ],
+      true,
+    ],
+    [
+
+      'tutorRegistrationForm',
+      '$tutor-registration-form',
+      [
+        DateField('date'),
+        StringField('firstName'),
+        StringField('lastName'),
+        StringField('friendlyName'),
+        StringField('friendlyFullName'),
+        NumberField('studentId'),
+        StringField('grade'),
+        StringField('email'),
+        StringField('phone'),
+        StringField('contactPref'),
+        StringField('homeroom'),
+        StringField('homeroomTeacher'),
+        StringField('afterSchoolAvailability'),
+        StringField('modDataA1To5'),
+        StringField('modDataB1To5'),
+        StringField('modDataA6To10'),
+        StringField('modDataB6To10'),
+        StringField('modDataPrefA1To5'),
+        StringField('modDataPrefB1To5'),
+        StringField('modDataPrefA6To10'),
+        StringField('modDataPrefB6To10'),
+        StringField('subjects0'),
+        StringField('subjects1'),
+        StringField('subjects2'),
+        StringField('subjects3'),
+        StringField('subjects4'),
+        StringField('subjects5'),
+        StringField('subjects6'),
+        StringField('subjects7'),
+        StringField('iceCreamQuestion'),
+        NumberField('numberGuessQuestion')
+      ],
+      true
+    ],
+    [
+      // this table is merged into the JSON of tutor.fields.attendance
+      // the table will get quite large, so we will hand-archive it from time to time
+      // ASSUMPTION: (thus...) the table DOESN'T contain all of the attendance data. Some of it
+      // will be archived somewhere else. The JSON will be merged with the attendance log.
+      'attendanceLog',
+      '$attendance-log',
+      [
+        NumberField('id'),
+        DateField('date'),
+        DateField('dateOfAttendance'), // rounded to nearest day
+        StringField('validity'), // filled with an error message if the form entry was typed wrong
+        NumberField('mod'),
+
+        // one of these ID fields will be left as -1 (blank).
+        NumberField('tutor'),
+        NumberField('learner'),
+        NumberField('minutesForTutor'),
+        NumberField('minutesForLearner'),
+        StringField('presenceForTutor'),
+        StringField('presenceForLearner'),
+
+        // used for reset purposes
+        StringField('markForReset')
+      ]
+    ],
+    [
+      'attendanceDays',
+      '$attendance-days',
+      [
+        NumberField('id'),
+        DateField('date'),
+        DateField('dateOfAttendance'),
+        StringField('abDay'),
+
+        // we add a functionality to reset a day's attendance absences
+        StringField('status') // upcoming, finished, finalized, unreset, reset
+      ],
+    ],
+    [
+      'operationLog',
+      '$operation-log',
+      [
+        NumberField('id'),
+        DateField('date'),
+        JsonField('args')
+      ]
+    ]
+  ] as const;
+
+  export const info = addIdAndDate(tableInfoData);
+  export type infoType = typeof info;
 }
 
 /*
@@ -372,54 +564,23 @@ primarily for caching
 */
 
 namespace TableIO {
-  const cache: ObjectMap<Info> = {}
-
-  export type Info = {
-    key: string
-    sheetName: string
+  export function retrieveAllRecords<T extends keyof TableInfo.infoType>(
+    key: T,
     sheet: GoogleAppsScript.Spreadsheet.Sheet
-    isWriteAllowed: boolean
-    fields: [FieldType, string][]
-  }
-
-  export function use(key: string) {
-    if (cache.hasOwnProperty(key)) {
-      return cache[key]
-    } else {
-      for (const ti of TableInfo.ARRAY_1) {
-        if (ti[0] === key) {
-          const sheetName = ti[1]
-          const sheet = SpreadsheetApp.getActive().getSheetByName(ti[1])
-          const fields = ti[2]
-          const isWriteAllowed = true // TODO Spec: forms
-          cache[key] = {
-            key,
-            sheetName,
-            sheet,
-            isWriteAllowed,
-            fields,
-          }
-          return cache[key]
-        }
-      }
-    }
-  }
-
-  export function retrieveAllRecords(
-    parseRecord: (raw: any[]) => Rec,
-    sheet: GoogleAppsScript.Spreadsheet.Sheet
-  ): RecCollection {
+  ): { [id: string]: TableInfo.ParseRecordType<TableInfo.infoType[T]['fields']> } {
     const raw = sheet.getDataRange().getValues()
-    const res: RecCollection = {}
+    const res = {}
     for (let i = 1; i < raw.length; ++i) {
-      const rec = parseRecord(raw[i])
-      res[String(rec.id)] = rec
+      const rec = parseRecord(raw[i], key)
+      res[String(rec['id'])] = rec
     }
     return res
   }
 
-  export function parseRecord(raw: any[], fields: [FieldType, string][]): Rec {
-    const rec: { [key: string]: any } = {}
+  export function parseRecord<T extends keyof TableInfo.infoType>(raw: any[], key: T): TableInfo.ParseRecordType<TableInfo.infoType[T]['fields']> {
+    const rec = {}
+
+    const fields = TableInfo.info[key].fields;
     for (let i = 0; i < fields.length; ++i) {
       const field = fields[i]
       // this accounts for blanks in the last field
@@ -428,50 +589,62 @@ namespace TableIO {
         field[0]
       )
     }
-    return rec as Rec
+    return rec as any;
   }
 }
 
-class Table {
-  io: TableIO.Info
+const x = TableInfo.info;
 
-  constructor(key: string) {
-    this.io = TableIO.use(key)
+class Table<T extends keyof TableInfo.infoType> {
+  static cache: { [U in keyof TableInfo.infoType]?: GoogleAppsScript.Spreadsheet.Sheet } = {};
+
+  key: T
+  sheetName: TableInfo.infoType[T]['sheetName']
+  sheet: GoogleAppsScript.Spreadsheet.Sheet
+  isWriteAllowed: boolean
+  fields: TableInfo.infoType[T]['fields']
+
+  constructor(key: T) {
+    this.key = key
+    this.sheetName = TableInfo.info[key].sheetName;
+    // use of ??= operator -- only if the left-hand side is undefined/null, assign it to the right-hand side
+    this.sheet = (Table.cache[key] ??= SpreadsheetApp.getActive().getSheetByName(
+      this.sheetName));
   }
 
-  static readAllRecords(key: string) {
+  static readAllRecords(key: keyof TableInfo.infoType) {
     return new Table(key).readAllRecords()
   }
 
   readAllRecords() {
     return TableIO.retrieveAllRecords(
-      (raw) => TableIO.parseRecord(raw, this.io.fields),
-      this.io.sheet
+      this.key,
+      this.sheet
     )
   }
 
-  serializeRecord(record: Rec): any[] {
-    return this.io.fields.map((field) =>
+  serializeRecord(record: TableInfo.Rec<T>): any[] {
+    return (this.fields as any[]).map((field) =>
       Parsing.serializeField(record[field[1]], field[0])
     )
   }
 
-  createRecord(record: Rec): Rec {
+  createRecord(record: TableInfo.Rec<T>): TableInfo.Rec<T> {
     this.checkWritePermission()
-    if (record.date === -1) {
-      record.date = Date.now()
+    if (record['date'] === -1) {
+      record['date'] = Date.now()
     }
-    if (record.id === -1) {
-      record.id = GlobalId.getNextGlobalId()
+    if (record['id'] === -1) {
+      record['id'] = GlobalId.getNextGlobalId()
     }
-    this.io.sheet.appendRow(this.serializeRecord(record))
+    this.sheet.appendRow(this.serializeRecord(record))
     return record
   }
 
   getRowById(id: number): number {
     // because the first row is headers, we ignore it and start from the second row
-    const mat: any[][] = this.io.sheet
-      .getRange(2, 1, this.io.sheet.getLastRow() - 1)
+    const mat: any[][] = this.sheet
+      .getRange(2, 1, this.sheet.getLastRow() - 1)
       .getValues()
     let rowNum = -1
     for (let i = 0; i < mat.length; ++i) {
@@ -479,14 +652,14 @@ class Table {
       if (typeof cell !== "number") {
         throw new Error(
           `id at location ${String(i)} is not a number in table ${String(
-            this.io.key
+            this.key
           )}`
         )
       }
       if (cell === id) {
         if (rowNum !== -1) {
           throw new Error(
-            `duplicate ID ${String(id)} in table ${String(this.io.key)}`
+            `duplicate ID ${String(id)} in table ${String(this.key)}`
           )
         }
         rowNum = i + 2 // i = 0 <=> second row (rows are 1-indexed)
@@ -494,56 +667,56 @@ class Table {
     }
     if (rowNum == -1) {
       throw new Error(
-        `ID ${String(id)} not found in table ${String(this.io.key)}`
+        `ID ${String(id)} not found in table ${String(this.key)}`
       )
     }
     return rowNum
   }
 
-  updateRecord(editedRecord: Rec, rowNum?: number): void {
+  updateRecord(editedRecord: TableInfo.Rec<T>, rowNum?: number): void {
     this.checkWritePermission()
     if (rowNum === undefined) {
-      rowNum = this.getRowById(editedRecord.id)
+      rowNum = this.getRowById(editedRecord['id'])
     }
-    this.io.sheet
-      .getRange(rowNum, 1, 1, this.io.sheet.getLastColumn())
+    this.sheet
+      .getRange(rowNum, 1, 1, this.sheet.getLastColumn())
       .setValues([this.serializeRecord(editedRecord)])
   }
 
-  updateAllRecords(editedRecords: Rec[]): void {
+  updateAllRecords(editedRecords: TableInfo.Rec<T>[]): void {
     this.checkWritePermission()
-    if (this.io.sheet.getLastRow() === 1) {
+    if (this.sheet.getLastRow() === 1) {
       return // the sheet is empty, and trying to select it will result in an error
     }
     // because the first row is headers, we ignore it and start from the second row
-    const mat: any[][] = this.io.sheet
-      .getRange(2, 1, this.io.sheet.getLastRow() - 1)
+    const mat: any[][] = this.sheet
+      .getRange(2, 1, this.sheet.getLastRow() - 1)
       .getValues()
     let idRowMap: ObjectMap<number> = {}
     for (let i = 0; i < mat.length; ++i) {
       idRowMap[String(mat[i][0])] = i + 2 // i = 0 <=> second row (rows are 1-indexed)
     }
     for (const r of editedRecords) {
-      this.updateRecord(r, idRowMap[String(r.id)])
+      this.updateRecord(r, idRowMap[String(r['id'])])
     }
   }
 
   deleteRecord(id: number): void {
     this.checkWritePermission()
-    this.io.sheet.deleteRow(this.getRowById(id))
+    this.sheet.deleteRow(this.getRowById(id))
   }
 
   rebuildSheetHeadersIfNeeded() {
     this.checkWritePermission()
-    const col = this.io.sheet.getLastColumn()
-    this.io.sheet.getRange(1, 1, 1, col === 0 ? 1 : col).clearContent()
-    this.io.sheet
-      .getRange(1, 1, 1, this.io.fields.length)
-      .setValues([this.io.fields.map((x) => x[1])])
+    const col = this.sheet.getLastColumn()
+    this.sheet.getRange(1, 1, 1, col === 0 ? 1 : col).clearContent()
+    this.sheet
+      .getRange(1, 1, 1, this.fields.length)
+      .setValues([(this.fields as any[]).map((x) => x[1])])
   }
 
   checkWritePermission(): void {
-    if (!this.io.isWriteAllowed) {
+    if (!this.isWriteAllowed) {
       throw new Error()
     }
   }
@@ -641,9 +814,6 @@ function debugHeaders() {
   try {
     // TODO!
     throw new Error()
-    for (const x of TableInfo.ARRAY_1) {
-      new Table(x[0]).rebuildSheetHeadersIfNeeded()
-    }
   } catch (err) {
     Logger.log(stringifyError(err))
     throw err
@@ -657,10 +827,10 @@ function debugHeaders() {
 // But we only do this for form records that have dates that don't exist as IDs in actualTable.
 // (Remember that a form date === a record ID.)
 // There is NO DELETING RECORDS! No matter what!
-function doFormSync(
-  formTable: Table,
-  actualTable: Table,
-  formRecordToActualRecord: (formRecord: Rec) => Rec
+function doFormSync<T extends keyof TableInfo.infoType, U extends keyof TableInfo.infoType>(
+  formTable: Table<T>,
+  actualTable: Table<U>,
+  formRecordToActualRecord: (formRecord: TableInfo.Rec<T>) => TableInfo.Rec<U>
 ): number {
   const actualRecords = actualTable.readAllRecords()
   const formRecords = formTable.readAllRecords()
@@ -669,15 +839,15 @@ function doFormSync(
 
   // create an index of actualdata >> date.
   // Then iterate over all formdata and find the ones that are missing from the index.
-  const index: { [date: string]: Rec } = {}
+  const index: { [date: string]: TableInfo.Rec<U> } = {}
   for (const idKey of Object.getOwnPropertyNames(actualRecords)) {
-    const record = actualRecords[idKey]
-    const dateIndexKey = String(record.date)
+    const record: TableInfo.Rec<U> = actualRecords[idKey] as any
+    const dateIndexKey = String(record['date'])
     index[dateIndexKey] = record
   }
   for (const idKey of Object.getOwnPropertyNames(formRecords)) {
-    const record = formRecords[idKey]
-    const dateIndexKey = String(record.date)
+    const record: TableInfo.Rec<T> = formRecords[idKey] as any
+    const dateIndexKey = String(record['date'])
     if (index[dateIndexKey] === undefined) {
       actualTable.createRecord(formRecordToActualRecord(record))
       ++numOfThingsSynced
@@ -689,7 +859,7 @@ function doFormSync(
 
 const MINUTES_PER_MOD = 38
 
-function onRetrieveMultiple(resourceNames: string[]) {
+function onRetrieveMultiple(resourceNames: (keyof TableInfo.infoType)[]) {
   const result = {}
   for (const resourceName of resourceNames) {
     result[resourceName] = Table.readAllRecords(resourceName)
@@ -717,22 +887,22 @@ namespace Parsing {
 
   */
 
-  export function parseField(x: any, fieldType: FieldType): any {
+  export function parseField<T extends FieldType>(x: any, fieldType: T): TableInfo.ParseFieldType<T> {
     switch (fieldType) {
       case FieldType.BOOLEAN:
-        return x === "true" || x === true ? true : false
+        return (x === "true" || x === true ? true : false) as TableInfo.ParseFieldType<T>
       case FieldType.NUMBER:
-        return Number(x)
+        return Number(x) as TableInfo.ParseFieldType<T>
       case FieldType.STRING:
-        return String(x)
+        return String(x) as TableInfo.ParseFieldType<T>
       case FieldType.DATE:
         if (x === "" || x === -1) {
-          return -1
+          return -1 as TableInfo.ParseFieldType<T>
         } else {
-          return Number(x)
+          return Number(x) as TableInfo.ParseFieldType<T>
         }
       case FieldType.JSON:
-        return JSON.parse(x)
+        return JSON.parse(x) as TableInfo.ParseFieldType<T>
     }
   }
   export function serializeField(x: any, fieldType: FieldType): any {
@@ -800,7 +970,7 @@ function onSyncForms(): number {
     attendanceDaysIndex[day.dateOfAttendance] = day.abDay
   }
 
-  function processRequestFormRecord(r: Rec): Rec {
+  function processRequestFormRecord(r: TableInfo.Rec<"requestForm">): TableInfo.Rec<"requestSubmissions"> {
     return {
       id: -1,
       date: r.date, // the date MUST be the date from the form; this is used for syncing
@@ -811,7 +981,6 @@ function onSyncForms(): number {
         r.modDataA6To10,
         r.modDataB6To10,
       ]),
-      specialRoom: "",
       status: "unchecked",
       homeroom: r.homeroom,
       homeroomTeacher: r.homeroomTeacher,
@@ -820,7 +989,7 @@ function onSyncForms(): number {
       annotation: "",
     }
   }
-  function processTutorRegistrationFormRecord(r: Rec): Rec {
+  function processTutorRegistrationFormRecord(r: TableInfo.Rec<"tutorRegistrationForm">): TableInfo.Rec<"tutors"> {
     function parseSubjectList(d: string[]) {
       return d
         .join(",")
@@ -862,7 +1031,7 @@ function onSyncForms(): number {
       additionalHours: 0,
     }
   }
-  function processSpecialRequestFormRecord(r: Rec): Rec {
+  function processSpecialRequestFormRecord(r: TableInfo.Rec<"specialRequestForm">): TableInfo.Rec<"requestSubmissions"> {
     let annotation = ""
     annotation += `TEACHER EMAIL: ${r.teacherEmail}; `
     annotation += `# LEARNERS: ${r.numLearners}; `
@@ -895,7 +1064,7 @@ function onSyncForms(): number {
       status: "unchecked",
     }
   }
-  function processAttendanceFormRecord(r: Rec): Rec {
+  function processAttendanceFormRecord(r: TableInfo.Rec<"attendanceForm">): TableInfo.Rec<"attendanceLog"> {
     let tutor = -1
     let learner = -1
     let validity = ""
@@ -977,7 +1146,7 @@ function onSyncForms(): number {
     }
 
     return {
-      id: r.id,
+      id: -1,
       date: r.date,
       dateOfAttendance: processedDateOfAttendance,
       validity,
@@ -1378,14 +1547,14 @@ function onGenerateSchedule() {
     } else {
       otherTutorStrings.push(
         String(tutors[x.id].name) +
-          x.refs
-            .filter(
-              ([sr, srid]) =>
-                sr === SchedulingReference.MATCHING &&
-                matchings[srid].mod === -1
-            )
-            .map(([sr, srid]) => matchingToText(matchings[srid]))
-            .join(" ")
+        x.refs
+          .filter(
+            ([sr, srid]) =>
+              sr === SchedulingReference.MATCHING &&
+              matchings[srid].mod === -1
+          )
+          .map(([sr, srid]) => matchingToText(matchings[srid]))
+          .join(" ")
       )
     }
   }
@@ -1405,15 +1574,15 @@ function onGenerateSchedule() {
   const PRIMARY_COLOR =
     "#" +
     COLOR_SCHEME[
-      {
-        0: 0,
-        1: 1,
-        2: 2,
-        3: 3,
-        4: 4,
-        5: 2,
-        6: 3,
-      }[DAY_OF_WEEK]
+    {
+      0: 0,
+      1: 1,
+      2: 2,
+      3: 3,
+      4: 4,
+      5: 2,
+      6: 3,
+    }[DAY_OF_WEEK]
     ]
   const SECONDARY_COLOR = "#383f51"
 
@@ -1587,7 +1756,7 @@ function uiDeDuplicateTutorsAndLearners() {
   }
 }
 
-function deDuplicateTableByStudentId(tableKey: string): number {
+function deDuplicateTableByStudentId(tableKey: keyof TableInfo.infoType): number {
   let numberOfOperations = 0
   type ReplacementMap = { [studentId: number]: { recordIds: number[] } }
 
